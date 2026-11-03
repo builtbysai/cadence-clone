@@ -26,3 +26,9 @@ Push to `main`. GitHub Pages serves the repository root. All asset paths are rel
 | `sw.js` | Offline cache. |
 
 Your data lives in `localStorage` under `cadence_pwa_state_v2`. Use **More → Export backup** to save it.
+
+## Responsive conventions
+- Sidebar nav from 768px; below that, bottom tabs. Short landscape phones (height ≤520px) get a compact left rail.
+- Columns are content-driven: `.main` is a size container and `.split` / `.cal-layout` go two-column at 760px of content width, not viewport width.
+- Onboarding and the Today ring size from `svh`, so the primary action stays above the fold on phones 640px tall and up. Height is never locked; shorter screens scroll.
+- Safe-area insets apply to `.wrap` and the nav.

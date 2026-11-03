@@ -461,7 +461,7 @@ function log(p) {
       <button class="icon-btn" data-action="log-date" data-d="-1" aria-label="Previous day">${icon('chevron-left')}</button>
       <div class="mid">
         <h1>${isToday ? 'Today' : fmtDay(iso)}</h1>
-        <p class="muted">${isToday ? fmtShort(iso) + ' · ' : ''}${phaseLine(st)}${st.fertility !== 'Low' ? ` · ${st.fertility} fertility` : ''} <span class="saved" id="saved">${icon('check')}</span><span class="sr" id="saved-sr" role="status"></span></p>
+        <p class="muted"><span class="nw">${isToday ? fmtShort(iso) + ' · ' : ''}Day ${st.cycleDay}</span> <span class="nw">${PHASE_NAMES[st.phase]}${st.fertility !== 'Low' ? ` · ${st.fertility} fertility` : ''}</span> <span class="saved" id="saved">${icon('check')}</span><span class="sr" id="saved-sr" role="status"></span></p>
         <input type="date" class="date-overlay" id="log-date-input" value="${iso}" max="${TODAY}" aria-label="Choose date">
       </div>
       <button class="icon-btn" data-action="log-date" data-d="1" aria-label="Next day" ${isToday ? 'disabled style="opacity:.3"' : ''}>${icon('chevron-right')}</button>
