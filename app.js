@@ -1,7 +1,7 @@
 // Tide UI. Views are template functions: (profile) => html. Events are delegated via data-action.
 // Model lives in cycle.js, copy in content.js, state in store.js.
 
-import { addDays, diffDays, todayISO, parseISO, fmtShort, fmtLong, fmtRange, relative, status, forecast, dayInfo, upcomingCycles, calendarDay, phaseBounds, sortedPeriods, latestStart, averageCycleLength, cycleStats, regularity, observedOvulation, clamp, PHASE_NAMES, PHASE_ORDER } from './cycle.js';
+import { pastYear, addDays, diffDays, todayISO, parseISO, fmtShort, fmtLong, fmtRange, relative, status, forecast, dayInfo, upcomingCycles, calendarDay, phaseBounds, sortedPeriods, latestStart, averageCycleLength, cycleStats, regularity, observedOvulation, clamp, PHASE_NAMES, PHASE_ORDER } from './cycle.js';
 import * as S from './store.js';
 import * as T from './content.js';
 import { figure, rose } from './figures.js';
@@ -16,7 +16,7 @@ const html = (strings, ...vals) => new Raw(strings.reduce((acc, s, i) => acc + s
 const icon = (name, cls = '') => html`<svg class="icon ${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const $ = (sel, root = document) => root.querySelector(sel);
 
-const fmtDay = (iso) => parseISO(iso).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+const fmtDay = (iso) => parseISO(iso).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', ...(pastYear(parseISO(iso)) && { year: 'numeric' }) });
 const monthLabel = (iso) => parseISO(iso).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const byId = (list, id) => list.find((x) => x.id === id);
@@ -32,10 +32,37 @@ const ui = {
   chart: 'hormones',
   cat: 'all',           // Guide filter
   draft: null,          // Log entry being edited
+  slide: 0,             // direction of the last month change, for the calendar animation
 };
 
 const VIEWS = ['today', 'calendar', 'log', 'people', 'history', 'guide'];
 const TABS = ['today', 'calendar', 'log', 'people', 'history'];
+
+// ---------- Motion helpers ----------
+
+// Restart a CSS animation by toggling a class.
+function play(el, cls) {
+  if (!el) return;
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+}
+
+// Slide each segmented control's thumb under its selected option.
+function placeSeg(seg) {
+  const on = seg.querySelector('[aria-checked="true"]');
+  if (!on || !on.offsetWidth) return;
+  seg.style.setProperty('--x', `${on.offsetLeft}px`);
+  seg.style.setProperty('--w', `${on.offsetWidth}px`);
+  if (!seg.classList.contains('ready')) requestAnimationFrame(() => seg.classList.add('ready'));
+}
+const placeSegs = (root = document) => root.querySelectorAll('.seg').forEach(placeSeg);
+window.addEventListener('resize', () => placeSegs());
+
+function pickSeg(el) {
+  el.parentElement.querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', b === el ? 'true' : 'false'));
+  placeSeg(el.parentElement);
+}
 
 // ---------- Small pieces ----------
 
@@ -142,7 +169,7 @@ function ringSvg(p) {
     }
   }
   const [tx, ty] = polar(RING.r + 19, mid(todayDay));
-  svg += `<circle class="mark" cx="${tx.toFixed(1)}" cy="${ty.toFixed(1)}" r="3.5" fill="var(--ink)"/>`;
+  svg += `<circle class="mark now" cx="${tx.toFixed(1)}" cy="${ty.toFixed(1)}" r="3.5" fill="var(--ink)"/>`;
   return `<svg viewBox="0 0 280 280" aria-hidden="true">${svg}</svg>`;
 }
 
@@ -239,21 +266,32 @@ function bbtChart(p, day) {
 
 const PHASE_VAR = { menstrual: 'var(--red)', follicular: 'var(--green)', ovulatory: 'var(--amber)', luteal: 'var(--plum)' };
 
+function tabRows(p) {
+  const info = dayInfo(p, shownDay(p));
+  const c = T.phaseCopy(info.phase, info.variant);
+  return ui.tab === 'care'
+    ? html`${row('eat', 'Nourishment', c.care.eat)}${row('move', 'Movement', c.care.move)}${row('evening', 'Evening', c.care.evening)}`
+    : ui.tab === 'partner'
+      ? row('people', c.partner.t, c.partner.b, html`<button class="btn quiet" data-action="copy-partner">Copy</button>`)
+      : html`${row('mood', c.mood.t, c.mood.b)}${row('focus', c.focus.t, c.focus.b)}${row('body', c.body.t, c.body.b)}`;
+}
+
+function chartBody(p) {
+  const day = shownDay(p);
+  const info = dayInfo(p, day);
+  const c = T.phaseCopy(info.phase, info.variant);
+  return ui.chart === 'bbt' ? bbtChart(p, day)
+    : ui.chart === 'rose' ? html`<div class="rose-wrap">${new Raw(rose(c.tendencies, PHASE_VAR[info.phase]))}</div><p class="muted cap">A general pattern, not your data.</p>`
+    : hormoneChart(p, day);
+}
+
 function detail(p) {
   const day = shownDay(p);
   const info = dayInfo(p, day);
   const c = T.phaseCopy(info.phase, info.variant);
   const tabs = [['feel', 'Feel'], ['care', 'Care'], ['partner', p.relation === 'Self' ? 'Partner' : 'Support']];
   const tabBtn = ([id, label]) => html`<button type="button" role="radio" aria-checked="${ui.tab === id ? 'true' : 'false'}" data-action="tab" data-value="${id}">${label}</button>`;
-  const rows = ui.tab === 'care'
-    ? html`${row('eat', 'Nourishment', c.care.eat)}${row('move', 'Movement', c.care.move)}${row('evening', 'Evening', c.care.evening)}`
-    : ui.tab === 'partner'
-      ? row('people', c.partner.t, c.partner.b, html`<button class="btn quiet" data-action="copy-partner">Copy</button>`)
-      : html`${row('mood', c.mood.t, c.mood.b)}${row('focus', c.focus.t, c.focus.b)}${row('body', c.body.t, c.body.b)}`;
   const chartTab = (id, label) => html`<button type="button" role="radio" aria-checked="${ui.chart === id ? 'true' : 'false'}" data-action="chart" data-value="${id}">${label}</button>`;
-  const chart = ui.chart === 'bbt' ? bbtChart(p, day)
-    : ui.chart === 'rose' ? html`<div class="rose-wrap">${new Raw(rose(c.tendencies, PHASE_VAR[info.phase]))}</div><p class="muted cap">A general pattern, not your data.</p>`
-    : hormoneChart(p, day);
   return html`
     <div>
       <div class="eyebrow p-${info.phase}"><i></i>${c.label}</div>
@@ -263,7 +301,7 @@ function detail(p) {
     </div>
     <div class="stack-tight">
       <div class="seg" role="radiogroup" aria-label="Guidance">${tabs.map(tabBtn)}</div>
-      <div class="group">${rows}</div>
+      <div class="group" id="tab-rows">${tabRows(p)}</div>
     </div>
     ${p.hormonal ? '' : html`<div>
       <div class="section-title">Expected</div>
@@ -277,7 +315,7 @@ function detail(p) {
       <div class="chart-head">
         <div class="seg" role="radiogroup" aria-label="Chart">${chartTab('hormones', 'Hormones')}${chartTab('bbt', 'Temperature')}${chartTab('rose', 'Tendencies')}</div>
       </div>
-      <div class="chart-wrap">${chart}</div>
+      <div class="chart-wrap" id="chart-body">${chartBody(p)}</div>
     </div>`}`;
 }
 
@@ -287,7 +325,10 @@ function todayTitle(p) {
   return fmtDay(addDays(TODAY, ui.day - st.cycleDay));
 }
 
+let introPlayed = false;
 function today(p) {
+  const intro = !introPlayed;
+  introPlayed = true;
   const st = status(p, TODAY, TODAY);
   const L = st.bounds.cycle;
   const day = shownDay(p);
@@ -295,7 +336,7 @@ function today(p) {
     <div class="split">
       <div class="sticky hero">
         <div class="today-title"><div><h1 id="today-title">${todayTitle(p)}</h1><p class="muted" id="today-date" ${ui.day === null ? '' : 'hidden'}>${fmtLong(TODAY)}</p></div><button class="btn quiet" id="reset-day" data-action="reset-day" ${ui.day === null ? 'hidden' : ''}>Today</button></div>
-        <div class="ring p-${dayInfo(p, day).phase}" id="ring" role="slider" tabindex="0" aria-label="Cycle day" aria-valuemin="1" aria-valuemax="${L}" aria-valuenow="${day}">
+        <div class="ring p-${dayInfo(p, day).phase} ${intro ? 'intro' : ''}" id="ring" role="slider" tabindex="0" aria-label="Cycle day" aria-valuemin="1" aria-valuemax="${L}" aria-valuenow="${day}">
           ${new Raw(ringSvg(p))}
           <div class="ring-center" id="ring-center">${ringCenter(p)}</div>
         </div>
@@ -303,7 +344,7 @@ function today(p) {
         <ul class="legend">${PHASE_ORDER.map((k) => html`<li class="p-${k}"><i></i>${PHASE_NAMES[k]} <span class="num">${st.bounds[k][0]}–${st.bounds[k][1]}</span></li>`)}</ul>
         ${upcoming(p)}
       </div>
-      <div id="detail" style="display:grid;gap:24px">${detail(p)}</div>
+      <div id="detail" data-phase="${dayInfo(p, day).phase}" style="display:grid;gap:24px">${detail(p)}</div>
     </div>`;
 }
 
@@ -312,7 +353,11 @@ function paintToday(p) {
   $('#today-title').textContent = todayTitle(p);
   $('#reset-day').hidden = ui.day === null;
   $('#today-date').hidden = ui.day !== null;
-  $('#detail').innerHTML = detail(p).s;
+  const box = $('#detail');
+  const phase = dayInfo(p, shownDay(p)).phase;
+  box.innerHTML = detail(p).s;
+  placeSegs(box);
+  if (box.dataset.phase !== phase) { box.dataset.phase = phase; play(box, 'swap'); }
 }
 
 function setDay(p, day) {
@@ -322,6 +367,7 @@ function setDay(p, day) {
   const value = next === st.cycleDay ? null : next;
   if (value === ui.day) return;
   ui.day = value;
+  tick();
   paintToday(p);
 }
 
@@ -413,11 +459,11 @@ function log(p) {
   return html`
     <div class="log-date">
       <button class="icon-btn" data-action="log-date" data-d="-1" aria-label="Previous day">${icon('chevron-left')}</button>
-      <button class="mid" data-action="pick-log-date" style="position:relative" aria-label="Choose date">
+      <div class="mid">
         <h1>${isToday ? 'Today' : fmtDay(iso)}</h1>
         <p class="muted">${isToday ? fmtShort(iso) + ' · ' : ''}${phaseLine(st)}${st.fertility !== 'Low' ? ` · ${st.fertility} fertility` : ''} <span class="saved" id="saved">${icon('check')}</span><span class="sr" id="saved-sr" role="status"></span></p>
-        <input type="date" class="sr" id="log-date-input" value="${iso}" max="${TODAY}" tabindex="-1" aria-hidden="true" style="left:50%;top:100%">
-      </button>
+        <input type="date" class="date-overlay" id="log-date-input" value="${iso}" max="${TODAY}" aria-label="Choose date">
+      </div>
       <button class="icon-btn" data-action="log-date" data-d="1" aria-label="Next day" ${isToday ? 'disabled style="opacity:.3"' : ''}>${icon('chevron-right')}</button>
     </div>
 
@@ -428,6 +474,7 @@ function log(p) {
       <div class="field-head" style="margin-top:16px">LH test</div>${seg('opk', T.LH, d.opk, 'LH test')}
       <div class="field-head" style="margin-top:16px">Temperature</div>
       <input class="input" type="number" inputmode="decimal" step="0.01" min="90" max="110" placeholder="°F, on waking" data-field="bbt" value="${d.bbt}" aria-label="Basal body temperature in degrees Fahrenheit">
+      <p class="hint" id="bbt-hint" role="alert" hidden>Enter a temperature between 90 and 110°F. This one won't be saved.</p>
     </div>`}
 
     <div class="field">
@@ -469,6 +516,7 @@ function saveDraft(p, now = true) {
     const saved = $('#saved');
     if (!saved) return;
     saved.classList.add('on');
+    play(saved, 'bump');
     $('#saved-sr').textContent = 'Saved';
     $('#log-clear').hidden = !p.logs[ui.date];
     clearTimeout(saved._t);
@@ -675,6 +723,7 @@ function profileForm(v, kind) {
         <label class="row"><span>Name</span><input class="input" name="name" value="${v.name}" required maxlength="32" placeholder="Required" autocapitalize="words" ${kind === 'profile' && v.id ? '' : 'autofocus'}></label>
         <label class="row"><span>${onboard ? 'Period started' : 'Last period'}</span><input class="input" type="date" name="lastPeriod" value="${v.lastPeriod}" max="${TODAY}" required></label>
       </div>
+      <p class="hint" data-hint hidden></p>
       ${onboard ? html`<div class="quick"><button type="button" class="chip" data-action="last-period" data-offset="0">Today</button><button type="button" class="chip" data-action="last-period" data-offset="1">Yesterday</button></div>` : ''}
       <div class="group" style="margin-top:20px">
         ${stepper('Cycle length', 'cycleLength', v.cycleLength, 20, 45)}
@@ -742,11 +791,43 @@ function onboarding() {
 
 const dlg = $('#sheet');
 function openSheet(title, body) {
+  clearTimeout(closeTimer);
+  dlg.classList.remove('closing');
+  dlg.style.transform = '';
   dlg.innerHTML = html`<div class="sheet-head"><h2>${title}</h2><button class="icon-btn" data-action="close-sheet" aria-label="Close">${icon('x')}</button></div><div class="sheet-body">${body}</div>`.s;
   if (!dlg.open) dlg.showModal();
 }
-const closeSheet = () => dlg.open && dlg.close();
+let closeTimer;
+function closeSheet() {
+  if (!dlg.open || dlg.classList.contains('closing')) return;
+  dlg.classList.add('closing');
+  closeTimer = setTimeout(() => { dlg.close(); dlg.classList.remove('closing'); dlg.style.transform = ''; dlg.style.transition = ''; }, 170);
+}
 dlg.addEventListener('click', (e) => { if (e.target === dlg) closeSheet(); });
+dlg.addEventListener('cancel', (e) => { e.preventDefault(); closeSheet(); });
+
+// On phones the sheet follows a downward drag from its header and closes past 90px.
+let drag = null;
+dlg.addEventListener('pointerdown', (e) => {
+  if (innerWidth >= 600 || !e.target.closest('.sheet-head') || e.target.closest('button')) return;
+  drag = { y: e.clientY, dy: 0 };
+  dlg.setPointerCapture(e.pointerId);
+  dlg.style.transition = 'none';
+});
+dlg.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  drag.dy = Math.max(0, e.clientY - drag.y);
+  dlg.style.transform = `translateY(${drag.dy}px)`;
+});
+const endDrag = () => {
+  if (!drag) return;
+  const { dy } = drag;
+  drag = null;
+  dlg.style.transition = 'transform 0.25s var(--ease)';
+  if (dy > 90) closeSheet(); else dlg.style.transform = '';
+};
+dlg.addEventListener('pointerup', endDrag);
+dlg.addEventListener('pointercancel', endDrag);
 
 function switcherSheet() {
   const s = S.get();
@@ -779,10 +860,21 @@ function periodSheet(p) {
     <form data-form="period" autocomplete="off">
       <div class="group">
         <label class="row"><span>Started</span><input class="input" type="date" name="start" value="${TODAY}" max="${TODAY}" required></label>
-        ${stepper('Length', 'length', p.periodLength, 2, 10)}
+        ${stepper('Length', 'flowDays', p.periodLength, 2, 10)}
       </div>
+      <p class="hint" data-hint hidden></p>
       <div style="margin-top:24px"><button class="btn primary block" type="submit">Save</button></div>
     </form>`);
+}
+
+// A start date years in the past is usually a typo. Warn, don't block: imported data can be old.
+function dateHint(input) {
+  if (!input.matches?.('input[type="date"][name="lastPeriod"], input[type="date"][name="start"]')) return;
+  const hint = input.closest('form')?.querySelector('[data-hint]');
+  if (!hint) return;
+  const years = input.value ? diffDays(TODAY, input.value) / 365 : 0;
+  hint.hidden = years < 2;
+  if (!hint.hidden) hint.textContent = `That was over ${Math.floor(years)} years ago. Check the date.`;
 }
 
 // ---------- Toast ----------
@@ -790,15 +882,24 @@ function periodSheet(p) {
 const toastEl = $('#toast');
 let toastTimer;
 let toastUndo;
+let hideTimer;
+function hideToast() {
+  clearTimeout(toastTimer);
+  toastUndo = null;
+  toastEl.classList.add('out');
+  hideTimer = setTimeout(() => { toastEl.hidden = true; toastEl.classList.remove('out'); }, 180);
+}
 function toast(message, undo) {
   clearTimeout(toastTimer);
+  clearTimeout(hideTimer);
+  toastEl.classList.remove('out');
   toastUndo = undo;
   toastEl.innerHTML = html`<span>${message}</span>${undo ? html`<button data-action="undo">Undo</button>` : ''}`.s;
   toastEl.hidden = false;
   toastEl.style.animation = 'none';
   void toastEl.offsetWidth;
   toastEl.style.animation = '';
-  toastTimer = setTimeout(() => { toastEl.hidden = true; toastUndo = null; }, undo ? 6500 : 2200);
+  toastTimer = setTimeout(hideToast, undo ? 6500 : 2200);
 }
 
 // ---------- Utilities ----------
@@ -847,9 +948,14 @@ function render() {
     });
     main.innerHTML = (p ? views[view](p) : onboarding()).s;
     if (view === 'today' && p) paintRing(p);
+    placeSegs(main);
+    if (ui.slide) {
+      play($('.cal'), ui.slide > 0 ? 'from-r' : 'from-l');
+      ui.slide = 0;
+    }
   };
 
-  const changed = lastView !== undefined && lastView !== view;
+  const changed = lastView !== view;
   lastView = view;
   paint();
   if (changed) { main.classList.remove('enter'); void main.offsetWidth; main.classList.add('enter'); }
@@ -873,7 +979,7 @@ const actions = {
   switcher: switcherSheet,
   more: moreSheet,
   period: () => periodSheet(S.active()),
-  undo: () => { const u = toastUndo; toastEl.hidden = true; toastUndo = null; if (u) { u(); ui.day = null; toast('Restored'); } },
+  undo: () => { const u = toastUndo; hideToast(); if (u) { u(); ui.day = null; toast('Restored'); } },
 
   switch: (el) => { closeSheet(); ui.day = null; S.setActive(el.dataset.id); },
   'add-person': () => openSheet('New person', profileForm(profileDefaults(null), 'profile')),
@@ -889,7 +995,9 @@ const actions = {
     const input = el.closest('form').elements[el.dataset.name];
     const v = clamp(Number(input.value) + Number(el.dataset.d), Number(input.dataset.min), Number(input.dataset.max));
     input.value = v;
-    el.closest('form').querySelector(`[data-out="${el.dataset.name}"]`).textContent = plural(v, 'day');
+    const out = el.closest('form').querySelector(`[data-out="${el.dataset.name}"]`);
+    out.textContent = plural(v, 'day');
+    play(out, 'bump');
     tick();
     if (el.closest('form').dataset.form === 'onboard') updatePreview(el.closest('form'));
   },
@@ -898,11 +1006,11 @@ const actions = {
     form.elements.lastPeriod.value = addDays(TODAY, -Number(el.dataset.offset));
     updatePreview(form);
   },
-  tab: (el) => { ui.tab = el.dataset.value; paintToday(S.active()); },
+  tab: (el) => { ui.tab = el.dataset.value; pickSeg(el); const box = $('#tab-rows'); box.innerHTML = tabRows(S.active()).s; play(box, 'swap'); tick(); },
 
   // Today
   'reset-day': () => { ui.day = null; paintToday(S.active()); },
-  chart: (el) => { ui.chart = el.dataset.value; paintToday(S.active()); },
+  chart: (el) => { ui.chart = el.dataset.value; pickSeg(el); const box = $('#chart-body'); box.innerHTML = chartBody(S.active()).s; play(box, 'swap'); tick(); },
   'copy-partner': () => {
     const p = S.active();
     const info = dayInfo(p, shownDay(p));
@@ -911,9 +1019,18 @@ const actions = {
   },
 
   // Calendar
-  'pick-date': (el) => { ui.date = el.dataset.date; render(); },
-  month: (el) => { const d = parseISO(ui.cursor); d.setMonth(d.getMonth() + Number(el.dataset.d)); ui.cursor = d.toISOString ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01` : ui.cursor; render(); },
-  'month-today': () => { ui.date = TODAY; ui.cursor = TODAY.slice(0, 8) + '01'; render(); },
+  'pick-date': (el) => {
+    ui.date = el.dataset.date;
+    document.querySelectorAll('.day.is-sel').forEach((d) => { d.classList.remove('is-sel'); d.setAttribute('aria-pressed', 'false'); });
+    el.classList.add('is-sel');
+    el.setAttribute('aria-pressed', 'true');
+    const box = $('#inspector');
+    box.innerHTML = inspector(S.active()).s;
+    play(box, 'swap');
+    tick();
+  },
+  month: (el) => { const d = parseISO(ui.cursor); d.setMonth(d.getMonth() + Number(el.dataset.d)); ui.cursor = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; ui.slide = Number(el.dataset.d); render(); },
+  'month-today': () => { ui.slide = TODAY.slice(0, 8) + '01' > ui.cursor ? 1 : -1; ui.date = TODAY; ui.cursor = TODAY.slice(0, 8) + '01'; render(); },
   'open-log': () => go('log'),
   'toggle-period': (el) => {
     const p = S.active();
@@ -926,10 +1043,9 @@ const actions = {
 
   // Log
   'log-date': (el) => { ui.date = addDays(ui.date, Number(el.dataset.d)); if (diffDays(ui.date, TODAY) > 0) ui.date = TODAY; render(); },
-  'pick-log-date': () => $('#log-date-input')?.showPicker?.(),
   'log-set': (el) => {
     ui.draft[el.dataset.key] = el.dataset.value;
-    el.parentElement.querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', b === el ? 'true' : 'false'));
+    pickSeg(el);
     saveDraft(S.active());
   },
   'log-toggle': (el) => {
@@ -937,6 +1053,7 @@ const actions = {
     const i = list.indexOf(el.dataset.value);
     if (i < 0) list.push(el.dataset.value); else list.splice(i, 1);
     el.setAttribute('aria-pressed', i < 0 ? 'true' : 'false');
+    if (i < 0) play(el, 'bump');
     saveDraft(S.active());
   },
   'log-rate': (el) => {
@@ -944,6 +1061,7 @@ const actions = {
     const n = Number(el.dataset.value);
     if (ui.draft[key] === n) delete ui.draft[key]; else ui.draft[key] = n;
     el.parentElement.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', Number(b.dataset.value) === ui.draft[key] ? 'true' : 'false'));
+    if (ui.draft[key] === n) play(el, 'bump');
     const labels = key === 'libido' ? T.DESIRE_LABELS : T.ENERGY_LABELS;
     $(`[data-label="${key}"]`).textContent = labels[ui.draft[key] - 1] ?? '';
     saveDraft(S.active());
@@ -957,9 +1075,9 @@ const actions = {
 
   // Data
   'guide-cat': (el) => { ui.cat = el.dataset.value; render(); },
-  'export-person': (el) => { const p = S.get().profiles.find((x) => x.id === el.dataset.id); if (p) { download(S.exportProfile(p), `cadence_${slug(p.name)}.json`); toast(`Exported ${p.name}`); } },
-  'export-all': () => { download(S.exportVault(), `cadence_backup_${TODAY}.json`); closeSheet(); toast('Backup downloaded'); },
-  'export-one': () => { const p = S.active(); download(S.exportProfile(p), `cadence_${slug(p.name)}.json`); closeSheet(); toast(`Exported ${p.name}`); },
+  'export-person': (el) => { const p = S.get().profiles.find((x) => x.id === el.dataset.id); if (p) { download(S.exportProfile(p), `tide_${slug(p.name)}.json`); toast(`Exported ${p.name}`); } },
+  'export-all': () => { download(S.exportVault(), `tide_backup_${TODAY}.json`); closeSheet(); toast('Backup downloaded'); },
+  'export-one': () => { const p = S.active(); download(S.exportProfile(p), `tide_${slug(p.name)}.json`); closeSheet(); toast(`Exported ${p.name}`); },
   sample: () => { closeSheet(); ui.day = null; toast('Sample data loaded', S.loadSample()); },
   wipe: () => { closeSheet(); ui.day = null; toast('All data erased', S.wipe()); },
 };
@@ -995,21 +1113,29 @@ document.addEventListener('submit', (e) => {
   else if (kind === 'period') {
     closeSheet();
     ui.day = null;
-    toast('Period logged', S.setPeriod(S.active(), v.start, Number(v.length)));
+    toast('Period logged', S.setPeriod(S.active(), v.start, Number(v.flowDays)));
   }
 });
 
 document.addEventListener('input', (e) => {
   if (e.target.id === 'scrub') return setDay(S.active(), Number(e.target.value));
+  dateHint(e.target);
   const onboard = e.target.closest?.('form[data-form="onboard"]');
   if (onboard) return updatePreview(onboard);
   const field = e.target.dataset?.field;
+  if (field === 'bbt') {
+    const t = e.target.value === '' ? null : Number(e.target.value);
+    const bad = t !== null && !(t >= 90 && t <= 110);
+    e.target.setAttribute('aria-invalid', bad ? 'true' : 'false');
+    $('#bbt-hint').hidden = !bad;
+  }
   if (!field || !ui.draft) return;
   ui.draft[field] = e.target.value;
   saveDraft(S.active(), false);
 });
 
 document.addEventListener('change', async (e) => {
+  dateHint(e.target);
   const onboard = e.target.closest?.('form[data-form="onboard"]');
   if (onboard && !e.target.matches('[data-import]')) return updatePreview(onboard);
   if (e.target.id === 'log-date-input') {
@@ -1087,6 +1213,9 @@ document.addEventListener('visibilitychange', () => {
   TODAY = t;
   render();
 });
+
+// Header hairline appears once content scrolls beneath it.
+window.addEventListener('scroll', () => $('#bar').classList.toggle('scrolled', window.scrollY > 4), { passive: true });
 
 // ---------- Boot ----------
 

@@ -38,3 +38,7 @@ Tide is a private, on-device cycle tracker (PWA). Vanilla JS ES modules, no buil
 - Log fields added in this version (`pain`, `events`) and the profile field `hormonal` default safely when absent in old data and backups.
 - Do not use `100vw`; it includes the scrollbar on Windows and causes horizontal scroll.
 - Test layout at 320, 390, 768, 1024, 1440 and 1920px before shipping.
+
+## Motion
+- Animations are CSS classes toggled with `play(el, cls)` (`bump`, `swap`); views rise in via `.enter`. Segmented controls use one sliding thumb positioned by `placeSeg` (call `placeSegs(root)` after inserting any `.seg`). Sheets close through `closeSheet()` (animated, swipe-down on phones); toasts through `hideToast()`.
+- Keep every animation under ~0.45s, transform/opacity only, and covered by the `prefers-reduced-motion` rule. Infinite animations are limited to the breathing "today" marker.

@@ -25,8 +25,11 @@ export function addDays(iso, n) {
 
 export const diffDays = (a, b) => Math.round((parseISO(a) - parseISO(b)) / 86400000);
 
-export const fmtShort = (iso) => parseISO(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-export const fmtLong = (iso) => parseISO(iso).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+// Past dates from an earlier year show the year, so a 2016 entry never looks like a 2026 one.
+export const pastYear = (d) => d.getFullYear() !== new Date().getFullYear() && d < new Date();
+const yr = (iso) => (pastYear(parseISO(iso)) ? { year: 'numeric' } : {});
+export const fmtShort = (iso) => parseISO(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...yr(iso) });
+export const fmtLong = (iso) => parseISO(iso).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', ...yr(iso) });
 export const fmtRange = (a, b) => `${fmtShort(a)} – ${fmtShort(b)}`;
 
 export function relative(days) {

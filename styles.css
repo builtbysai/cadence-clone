@@ -1,4 +1,4 @@
-/* Cadence — one stylesheet, no dependencies.
+/* Tide — one stylesheet, no dependencies.
    Tokens → base → layout → components → views. System fonts, follows the system theme. */
 
 :root {
@@ -424,7 +424,7 @@ dialog[open]::backdrop { animation: fade 0.2s ease; }
 /* ---------- Motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
 
 .fade-in { animation: fade 0.25s ease both; }
@@ -505,3 +505,81 @@ dialog[open]::backdrop { animation: fade 0.2s ease; }
 .lvl i.on { background: var(--ink-2); }
 .cycle-bar { min-width: 24px; }
 .log-date p { text-wrap: balance; }
+.log-date .mid { position: relative; }
+.date-overlay { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
+.date-overlay::-webkit-calendar-picker-indicator { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; }
+.hint { margin: 8px 4px 0; font-size: 13px; color: var(--amber); }
+.input[aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 0; }
+
+/* ---------- Motion & feel ---------- */
+
+::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+html { scroll-behavior: smooth; }
+
+/* Segmented controls: one thumb that slides to the selected option. */
+.seg { position: relative; isolation: isolate; }
+.seg::before {
+  content: ""; position: absolute; z-index: -1; top: 2px; bottom: 2px; left: 0;
+  width: var(--w, 0px); transform: translateX(var(--x, 0px)); border-radius: 8px;
+  background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14), 0 0 0 0.5px var(--line);
+}
+.seg.ready::before { transition: transform 0.32s var(--ease), width 0.32s var(--ease); }
+.seg button, .seg button[aria-checked="true"] { background: none; box-shadow: none; }
+.seg button[aria-checked="true"] { color: var(--ink); }
+
+@keyframes bump { 40% { transform: scale(1.1); } }
+.bump { animation: bump 0.3s var(--ease); }
+@keyframes swap { from { opacity: 0; transform: translateY(6px); } }
+.swap { animation: swap 0.24s var(--ease); }
+@keyframes rise-in { from { opacity: 0; transform: translateY(10px); } }
+
+/* Each view's blocks rise in one after another. */
+.enter { animation: none; }
+.enter > * { animation: rise-in 0.42s var(--ease) both; }
+.enter > :nth-child(2) { animation-delay: 0.04s; }
+.enter > :nth-child(3) { animation-delay: 0.08s; }
+.enter > :nth-child(4) { animation-delay: 0.12s; }
+.enter > :nth-child(5) { animation-delay: 0.16s; }
+.enter > :nth-child(6) { animation-delay: 0.2s; }
+.enter > :nth-child(n + 7) { animation-delay: 0.24s; }
+.welcome-form > * { animation: rise-in 0.5s var(--ease) both; }
+.welcome-form > :nth-child(2) { animation-delay: 0.05s; }
+.welcome-form > :nth-child(3) { animation-delay: 0.1s; }
+.welcome-form > :nth-child(4) { animation-delay: 0.15s; }
+.welcome-form > :nth-child(5) { animation-delay: 0.2s; }
+
+@keyframes slide-r { from { opacity: 0; transform: translateX(28px); } }
+@keyframes slide-l { from { opacity: 0; transform: translateX(-28px); } }
+.cal.from-r { animation: slide-r 0.3s var(--ease); }
+.cal.from-l { animation: slide-l 0.3s var(--ease); }
+
+/* Ring */
+@keyframes numin { from { opacity: 0.3; transform: translateY(6px) scale(0.96); } }
+.ring-day { animation: numin 0.24s var(--ease); }
+.ring-phase { transition: color 0.3s; }
+@keyframes breathe { 50% { transform: scale(1.45); opacity: 0.65; } }
+.mark.now { transform-box: fill-box; transform-origin: center; animation: breathe 2.6s ease-in-out infinite; }
+.scrub::-webkit-slider-thumb { transition: transform 0.15s var(--ease); }
+.scrub:active::-webkit-slider-thumb { transform: scale(1.18); }
+
+/* Sheets and toast leave as gracefully as they arrive */
+@keyframes sheet-out { to { opacity: 0; transform: scale(0.97) translateY(6px); } }
+@keyframes sheet-down { to { opacity: 0.5; transform: translateY(100%); } }
+@keyframes fade-out { to { opacity: 0; } }
+dialog[open].closing { animation: sheet-out 0.17s ease-in forwards; }
+dialog[open].closing::backdrop { animation: fade-out 0.17s ease-in forwards; }
+@media (max-width: 599px) { dialog[open].closing { animation-name: sheet-down; } }
+@keyframes toast-out { to { opacity: 0; transform: translate(-50%, 10px); } }
+.toast.out { animation: toast-out 0.18s ease-in forwards; }
+
+/* Header hairline once content scrolls under it */
+.bar::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--line); opacity: 0; transition: opacity 0.2s; }
+.bar.scrolled::after { opacity: 1; }
+
+@keyframes iconpop { 40% { transform: scale(1.18) translateY(-1px); } }
+.nav button[aria-current="page"] .icon { animation: iconpop 0.4s var(--ease); }
+
+@media (hover: hover) {
+  .person-card, .article { transition: transform 0.25s var(--ease), box-shadow 0.25s; }
+  .person-card:not(.active):hover, .article:hover { transform: translateY(-2px); box-shadow: 0 0 0 1px var(--line), 0 10px 28px rgba(0, 0, 0, 0.07); }
+}

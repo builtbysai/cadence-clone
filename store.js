@@ -16,6 +16,13 @@ const tags = (v) => [...new Set(list(v).map(canonicalTag))];
 const isISO = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const uid = () => 'p_' + (globalThis.crypto?.randomUUID?.().slice(0, 8) ?? Date.now().toString(36));
 
+// Waking temperature in °F. Anything outside 90–110 is not a real reading and is dropped.
+function temperature(v) {
+  if (v === undefined || v === null || v === '') return '';
+  const n = Number(v);
+  return n >= 90 && n <= 110 ? String(Math.round(n * 100) / 100) : '';
+}
+
 function normalizeLog(l) {
   const out = {
     flow: text(l.flow, 'none'),
@@ -25,7 +32,7 @@ function normalizeLog(l) {
     opk: text(l.opk, 'none'),
     moods: tags(l.moods),
     symptoms: tags(l.symptoms),
-    bbt: l.bbt === undefined || l.bbt === null ? '' : String(l.bbt),
+    bbt: temperature(l.bbt),
     notes: text(l.notes),
     pain: PAIN.some((x) => x.id === l.pain) ? l.pain : 'none',
     events: tags(l.events),
@@ -204,7 +211,7 @@ export function exportProfile(p) {
 // Accepts a vault, a single-profile export, or a bare profile. Returns a message and an undo, or throws.
 export function importData(parsed) {
   if (parsed && parsed.type === 'cadence_single_profile' && parsed.profile?.name) return addImported(parsed.profile);
-  if (parsed && Array.isArray(parsed.profiles)) {
+  if (parsed && Array.isArray(parsed.profiles) && parsed.profiles.length) {
     const incoming = normalizeState(parsed);
     const undo = commit((s) => { s.profiles = incoming.profiles; s.activeProfileId = incoming.activeProfileId; });
     return { message: `Restored ${incoming.profiles.length} ${incoming.profiles.length === 1 ? 'profile' : 'profiles'}`, undo };

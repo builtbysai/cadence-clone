@@ -35,7 +35,7 @@ test('imports a vault, a single profile and a bare profile', () => {
 });
 
 test('import rejects unrelated files', () => {
-  assert.throws(() => S.importData({ hello: 'world' }), /Not a Cadence file/);
+  assert.throws(() => S.importData({ hello: 'world' }), /Not a Tide file/);
   assert.throws(() => S.importData(null));
 });
 
@@ -83,4 +83,18 @@ test('tags keep their original ids, and the redesign spellings migrate back', ()
 test('unknown tags are kept as typed', () => {
   const p = S.normalizeProfile({ name: 'T', periods: [{ start: '2026-10-01' }], logs: { '2026-10-02': { moods: ['Custom'] } } });
   assert.deepEqual(p.logs['2026-10-02'].moods, ['Custom']);
+});
+
+test('temperature: impossible values are dropped, real ones rounded', () => {
+  const t = (bbt) => S.normalizeProfile({ name: 'T', periods: [{ start: '2026-10-01' }], logs: { '2026-10-02': { bbt, notes: 'x' } } }).logs['2026-10-02'].bbt;
+  assert.equal(t('200'), '');
+  assert.equal(t('50'), '');
+  assert.equal(t(98.5999984741211), '98.6');
+  assert.equal(t('97.38'), '97.38');
+  assert.equal(t(''), '');
+});
+
+test('an empty vault is rejected instead of erasing everything', () => {
+  assert.throws(() => S.importData({ profiles: [] }));
+  assert.throws(() => S.importData({ garbage: true }));
 });

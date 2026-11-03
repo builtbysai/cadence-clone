@@ -1,6 +1,6 @@
 // Offline support. Network first so updates show up immediately; cache is the fallback.
 // Bump VERSION when the file list changes.
-const VERSION = 'cadence-v6';
+const VERSION = 'tide-v2';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'cycle.js', 'content.js', 'store.js', 'figures.js', 'manifest.json', 'icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
