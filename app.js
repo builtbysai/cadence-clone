@@ -1,9 +1,10 @@
 // Cadence UI. Views are template functions: (profile) => html. Events are delegated via data-action.
 // Model lives in cycle.js, copy in content.js, state in store.js.
 
-import { addDays, diffDays, todayISO, parseISO, fmtShort, fmtLong, fmtRange, relative, status, forecast, dayInfo, upcomingCycles, calendarDay, phaseBounds, sortedPeriods, latestStart, averageCycleLength, clamp, PHASE_NAMES, PHASE_ORDER } from './cycle.js';
+import { addDays, diffDays, todayISO, parseISO, fmtShort, fmtLong, fmtRange, relative, status, forecast, dayInfo, upcomingCycles, calendarDay, phaseBounds, sortedPeriods, latestStart, averageCycleLength, cycleStats, regularity, observedOvulation, clamp, PHASE_NAMES, PHASE_ORDER } from './cycle.js';
 import * as S from './store.js';
 import * as T from './content.js';
+import { figure, rose } from './figures.js';
 
 // ---------- Templating ----------
 
@@ -24,10 +25,12 @@ const byId = (list, id) => list.find((x) => x.id === id);
 
 let TODAY = todayISO();
 const ui = {
+  tab: 'feel',          // Today detail: feel | care | partner
   day: null,            // scrubbed cycle day on Today, null = actual today
   date: TODAY,          // selected date for Calendar / Log
   cursor: TODAY.slice(0, 8) + '01', // first day of the month shown in Calendar
   chart: 'hormones',
+  cat: 'all',           // Guide filter
   draft: null,          // Log entry being edited
 };
 
@@ -78,9 +81,11 @@ function summarize(log) {
   if (log.opk && log.opk !== 'none') tags.push(`LH ${label(T.LH, log.opk).toLowerCase()}`);
   if (log.bbt) tags.push(`${log.bbt}°F`);
   if (log.libido) tags.push(`Desire ${log.libido}/5`);
-  if (log.energy) tags.push(`Vitality ${log.energy}/5`);
+  if (log.energy) tags.push(`Energy ${log.energy}/5`);
+  if (log.pain && log.pain !== 'none') tags.push(`${label(T.PAIN, log.pain)} pain`);
   (log.sexActivities || []).forEach((id) => tags.push(label(T.INTIMACY, id)));
-  return [...tags, ...(log.sexQualities || []), ...(log.moods || []), ...(log.symptoms || [])];
+  const names = (list) => (list || []).map(T.tagLabel);
+  return [...tags, ...names(log.sexQualities), ...names(log.moods), ...names(log.symptoms), ...names(log.events)];
 }
 
 // ---------- Today ----------
@@ -112,19 +117,28 @@ function ringSvg(p) {
   const L = b.cycle;
   const todayDay = Math.min(st.cycleDay, L);
   const start = latestStart(p, TODAY);
+  const obs = observedOvulation(p, TODAY);
+  const ovDay = Math.min(L, obs?.day ?? b.ovulationDay);
+  const fertile = obs ? [Math.max(1, ovDay - 5), ovDay] : b.fertile;
   let svg = '';
   for (let d = 1; d <= L; d++) {
-    svg += `<path class="seg-path p-${dayInfo(p, d).phase}" data-day="${d}" d="${arc(d, L)}"/>`;
+    svg += `<path class="seg-path p-${dayInfo(p, d).phase}" data-day="${d}" style="--i:${d}" d="${arc(d, L)}"/>`;
   }
-  // Markers: ovulation and logged intimacy inside the ring, today outside.
+  // Inside the ring: the fertile window as a thin track, ovulation as a ring (filled once confirmed), logged intimacy as dots.
+  // Outside: today.
   const mid = (d) => (d - 0.5) * (360 / L);
-  const [ox, oy] = polar(RING.r - 19, mid(b.ovulationDay));
-  svg += `<circle class="mark" cx="${ox.toFixed(1)}" cy="${oy.toFixed(1)}" r="3.5" fill="none" stroke="var(--amber)" stroke-width="1.75"/>`;
+  if (!p.hormonal) {
+    const [ax, ay] = polar(RING.r - 19, fertile[0] * (360 / L) - 360 / L + 1);
+    const [bx, by] = polar(RING.r - 19, fertile[1] * (360 / L) - 1);
+    svg += `<path class="mark" d="M${ax.toFixed(1)},${ay.toFixed(1)}A${RING.r - 19},${RING.r - 19} 0 0 1 ${bx.toFixed(1)},${by.toFixed(1)}" fill="none" stroke="var(--amber)" stroke-opacity=".38" stroke-width="3" stroke-linecap="round"/>`;
+    const [ox, oy] = polar(RING.r - 19, mid(ovDay));
+    svg += `<circle class="mark" cx="${ox.toFixed(1)}" cy="${oy.toFixed(1)}" r="4" fill="${obs?.confirmed ? 'var(--amber)' : 'var(--bg)'}" stroke="var(--amber)" stroke-width="1.75"/>`;
+  }
   for (let d = 1; d <= L; d++) {
     const log = p.logs[addDays(start, d - 1)];
     if (log && (log.sexActivities?.length || log.libido >= 4)) {
       const [x, y] = polar(RING.r - 19, mid(d));
-      if (d !== b.ovulationDay) svg += `<circle class="mark" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.6" fill="var(--rose)"/>`;
+      if (d !== ovDay || p.hormonal) svg += `<circle class="mark" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.6" fill="var(--rose)"/>`;
     }
   }
   const [tx, ty] = polar(RING.r + 19, mid(todayDay));
@@ -154,18 +168,23 @@ function paintRing(p) {
   ring.setAttribute('aria-valuenow', day);
   ring.setAttribute('aria-valuetext', `Day ${day}, ${PHASE_NAMES[dayInfo(p, day).phase]} phase`);
   $('#ring-center').innerHTML = ringCenter(p).s;
+  const scrub = $('#scrub');
+  if (scrub) { scrub.value = sel; scrub.style.setProperty('--p', `${((sel - 1) / Math.max(1, L - 1)) * 100}%`); }
 }
 
 function upcoming(p) {
   const f = forecast(p, TODAY);
-  const inWindow = diffDays(f.fertileStart, TODAY) <= 0 && diffDays(f.fertileEnd, TODAY) >= 0;
-  const lateText = f.late ? `${plural(f.late, 'day')} late` : null;
+  const fertileNow = diffDays(f.fertileStart, TODAY) <= 0 && diffDays(f.fertileEnd, TODAY) >= 0;
+  const passed = f.observed && diffDays(f.fertileEnd, TODAY) < 0;
+  const ovNote = f.observed?.confirmed ? ' · confirmed' : '';
+  const range = f.spread ? ` · ±${f.spread}d` : '';
+  const periodSub = f.late ? `Expected ${fmtShort(f.nextPeriod)} · cycles shift with stress, travel and illness` : fmtRange(f.nextPeriod, f.nextPeriodEnd) + range;
   return html`
     <div>
       <div class="section-title">Coming up</div>
       <div class="group">
-        <div class="row"><span class="dot p-menstrual"></span><div class="row-main"><div class="row-title">Period</div><div class="row-sub">${f.late ? 'Expected ' + fmtShort(f.nextPeriod) : fmtRange(f.nextPeriod, f.nextPeriodEnd)}</div></div><span class="row-end ${f.late ? 'warn' : ''}">${lateText ?? relative(f.daysUntilPeriod)}</span></div>
-        <div class="row"><span class="dot p-ovulatory"></span><div class="row-main"><div class="row-title">Fertile window</div><div class="row-sub">${fmtRange(f.fertileStart, f.fertileEnd)}</div></div><span class="row-end">${inWindow ? 'Now' : relative(diffDays(f.fertileStart, TODAY))}</span></div>
+        <div class="row"><span class="dot p-menstrual"></span><div class="row-main"><div class="row-title">Period</div><div class="row-sub">${periodSub}</div></div><span class="row-end ${f.late ? 'warn' : ''}">${f.late ? plural(f.late, 'day') + ' late' : relative(f.daysUntilPeriod)}</span></div>
+        ${p.hormonal ? '' : html`<div class="row"><span class="dot p-ovulatory"></span><div class="row-main"><div class="row-title">Fertile window</div><div class="row-sub">${fmtRange(f.fertileStart, f.fertileEnd)} · ovulation ${fmtShort(f.ovulation)}${ovNote}</div></div><span class="row-end">${fertileNow ? 'Now' : passed ? 'Passed' : relative(diffDays(f.fertileStart, TODAY))}</span></div>`}
         <div class="row"><span class="dot p-luteal"></span><div class="row-main"><div class="row-title">Luteal phase</div><div class="row-sub">Starts ${fmtShort(f.lutealStart)}</div></div><span class="row-end">${relative(diffDays(f.lutealStart, TODAY))}</span></div>
       </div>
     </div>`;
@@ -218,43 +237,48 @@ function bbtChart(p, day) {
     <div class="key"><span style="--c:var(--amber)"><i></i>Expected</span><span style="--c:var(--red)"><i></i>Logged</span></div>`;
 }
 
+const PHASE_VAR = { menstrual: 'var(--red)', follicular: 'var(--green)', ovulatory: 'var(--amber)', luteal: 'var(--plum)' };
+
 function detail(p) {
   const day = shownDay(p);
   const info = dayInfo(p, day);
-  const copy = T.phaseCopy(info.phase, info.variant);
-  const care = copy.care;
-  const partnerHeading = p.relation === 'Self' ? 'Share with a partner' : `Supporting ${p.name}`;
+  const c = T.phaseCopy(info.phase, info.variant);
+  const tabs = [['feel', 'Feel'], ['care', 'Care'], ['partner', p.relation === 'Self' ? 'Partner' : 'Support']];
+  const tabBtn = ([id, label]) => html`<button type="button" role="radio" aria-checked="${ui.tab === id ? 'true' : 'false'}" data-action="tab" data-value="${id}">${label}</button>`;
+  const rows = ui.tab === 'care'
+    ? html`${row('eat', 'Nourishment', c.care.eat)}${row('move', 'Movement', c.care.move)}${row('evening', 'Evening', c.care.evening)}`
+    : ui.tab === 'partner'
+      ? row('people', c.partner.t, c.partner.b, html`<button class="btn quiet" data-action="copy-partner">Copy</button>`)
+      : html`${row('mood', c.mood.t, c.mood.b)}${row('focus', c.focus.t, c.focus.b)}${row('body', c.body.t, c.body.b)}`;
+  const chartTab = (id, label) => html`<button type="button" role="radio" aria-checked="${ui.chart === id ? 'true' : 'false'}" data-action="chart" data-value="${id}">${label}</button>`;
+  const chart = ui.chart === 'bbt' ? bbtChart(p, day)
+    : ui.chart === 'rose' ? html`<div class="rose-wrap">${new Raw(rose(c.tendencies, PHASE_VAR[info.phase]))}</div><p class="muted cap">A general pattern, not your data.</p>`
+    : hormoneChart(p, day);
   return html`
     <div>
-      <h2 class="lede">${copy.headline}</h2>
-      <p>${copy.summary}</p>
+      <div class="eyebrow p-${info.phase}"><i></i>${c.label}</div>
+      <h2 class="lede">${c.headline}</h2>
+      <p>${c.physiology}</p>
+      ${p.hormonal ? '' : html`<div class="chips-inline">${c.cues.map((x) => html`<span class="chip static">${x}</span>`)}</div>`}
     </div>
-    <div class="group">
-      ${row('mood', copy.mood.t, copy.mood.b)}
-      ${row('focus', copy.focus.t, copy.focus.b)}
-      ${row('body', copy.body.t, copy.body.b)}
+    <div class="stack-tight">
+      <div class="seg" role="radiogroup" aria-label="Guidance">${tabs.map(tabBtn)}</div>
+      <div class="group">${rows}</div>
     </div>
-    <div>
-      <div class="section-title">Care</div>
+    ${p.hormonal ? '' : html`<div>
+      <div class="section-title">Expected</div>
       <div class="group">
-        ${row('eat', 'Nourishment', care.eat)}
-        ${row('move', 'Movement', care.move)}
-        ${row('evening', 'Evening', care.evening)}
+        <div class="row"><span>Cervical fluid</span><span class="row-end">${c.fluid}</span></div>
+        <div class="row"><span>Waking temperature</span><span class="row-end num">about ${info.expectedBbt.toFixed(1)}°F</span></div>
+        <div class="row"><span>Appetite</span><span class="row-end wrap-end">${c.metabolic}</span></div>
       </div>
-    </div>
-    <div>
-      <div class="section-title">${partnerHeading}</div>
-      <div class="group">${row('people', copy.partner.t, copy.partner.b, html`<button class="btn quiet" data-action="copy-partner">Copy</button>`)}</div>
-    </div>
-    <div class="group">
+    </div>`}
+    ${p.hormonal ? '' : html`<div class="group">
       <div class="chart-head">
-        <div class="seg" role="radiogroup" aria-label="Chart">
-          <button type="button" role="radio" aria-checked="${ui.chart === 'hormones' ? 'true' : 'false'}" data-action="chart" data-value="hormones">Hormones</button>
-          <button type="button" role="radio" aria-checked="${ui.chart === 'bbt' ? 'true' : 'false'}" data-action="chart" data-value="bbt">Temperature</button>
-        </div>
+        <div class="seg" role="radiogroup" aria-label="Chart">${chartTab('hormones', 'Hormones')}${chartTab('bbt', 'Temperature')}${chartTab('rose', 'Tendencies')}</div>
       </div>
-      <div class="chart-wrap">${ui.chart === 'bbt' ? bbtChart(p, day) : hormoneChart(p, day)}</div>
-    </div>`;
+      <div class="chart-wrap">${chart}</div>
+    </div>`}`;
 }
 
 function todayTitle(p) {
@@ -270,11 +294,13 @@ function today(p) {
   return html`
     <div class="split">
       <div class="sticky hero">
-        <div class="today-title"><h1 id="today-title">${todayTitle(p)}</h1><button class="btn quiet" id="reset-day" data-action="reset-day" ${ui.day === null ? 'hidden' : ''}>Today</button></div>
+        <div class="today-title"><div><h1 id="today-title">${todayTitle(p)}</h1><p class="muted" id="today-date" ${ui.day === null ? '' : 'hidden'}>${fmtLong(TODAY)}</p></div><button class="btn quiet" id="reset-day" data-action="reset-day" ${ui.day === null ? 'hidden' : ''}>Today</button></div>
         <div class="ring p-${dayInfo(p, day).phase}" id="ring" role="slider" tabindex="0" aria-label="Cycle day" aria-valuemin="1" aria-valuemax="${L}" aria-valuenow="${day}">
           ${new Raw(ringSvg(p))}
           <div class="ring-center" id="ring-center">${ringCenter(p)}</div>
         </div>
+        <input class="scrub" id="scrub" type="range" min="1" max="${L}" value="${Math.min(day, L)}" style="--p:${((Math.min(day, L) - 1) / Math.max(1, L - 1)) * 100}%" aria-label="Explore any day of the cycle">
+        <ul class="legend">${PHASE_ORDER.map((k) => html`<li class="p-${k}"><i></i>${PHASE_NAMES[k]} <span class="num">${st.bounds[k][0]}–${st.bounds[k][1]}</span></li>`)}</ul>
         ${upcoming(p)}
       </div>
       <div id="detail" style="display:grid;gap:24px">${detail(p)}</div>
@@ -285,6 +311,7 @@ function paintToday(p) {
   paintRing(p);
   $('#today-title').textContent = todayTitle(p);
   $('#reset-day').hidden = ui.day === null;
+  $('#today-date').hidden = ui.day !== null;
   $('#detail').innerHTML = detail(p).s;
 }
 
@@ -304,17 +331,20 @@ function monthCells(p) {
   const first = parseISO(ui.cursor);
   const lead = first.getDay();
   const count = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const obs = observedOvulation(p, TODAY);
   const cells = [];
   for (let i = 0; i < lead; i++) cells.push(html`<span class="day out" aria-hidden="true"></span>`);
   for (let n = 1; n <= count; n++) {
     const iso = ui.cursor.slice(0, 8) + String(n).padStart(2, '0');
-    const c = calendarDay(p, iso, TODAY);
+    const c = calendarDay(p, iso, TODAY, obs);
     const log = p.logs[iso];
-    const cls = [c.logged && 'is-period', c.predicted && 'is-predicted', c.fertile && !c.logged && 'is-fertile', iso === TODAY && 'is-today', iso === ui.date && 'is-sel'].filter(Boolean).join(' ');
-    const flags = [c.logged && 'period', c.predicted && 'predicted period', c.fertile && 'fertile window', c.ovulation && 'ovulation', log && 'entry logged'].filter(Boolean).join(', ');
-    cells.push(html`<button type="button" class="day ${cls}" data-action="pick-date" data-date="${iso}" aria-pressed="${iso === ui.date ? 'true' : 'false'}" aria-label="${fmtLong(iso)}${flags ? ', ' + flags : ''}">
+    const edge = (off) => calendarDay(p, addDays(iso, off), TODAY, obs).fertile && !calendarDay(p, addDays(iso, off), TODAY, obs).logged;
+    const band = c.fertile && !c.logged;
+    const cls = [c.logged && 'is-period', c.predicted && 'is-predicted', band && 'is-fertile', band && !edge(-1) && 'f-start', band && !edge(1) && 'f-end', iso === TODAY && 'is-today', iso === ui.date && 'is-sel'].filter(Boolean).join(' ');
+    const flags = [`cycle day ${c.cycleDay}`, c.logged && 'period', c.predicted && 'predicted period', band && 'fertile window', c.ovulation && (c.confirmed ? 'ovulation confirmed' : 'estimated ovulation'), log && 'entry logged'].filter(Boolean).join(', ');
+    cells.push(html`<button type="button" class="day ${cls}" data-action="pick-date" data-date="${iso}" aria-pressed="${iso === ui.date ? 'true' : 'false'}" aria-label="${fmtLong(iso)}, ${flags}">
       <span class="n">${n}</span>
-      <span class="marks">${c.ovulation ? html`<i class="m-ov"></i>` : ''}${log?.sexActivities?.length ? html`<i class="m-sex"></i>` : ''}${log && !log.sexActivities?.length ? html`<i></i>` : ''}</span>
+      <span class="marks" aria-hidden="true">${c.ovulation ? html`<i class="m-ov ${c.confirmed ? 'on' : ''}"></i>` : ''}${log?.sexActivities?.length ? html`<i class="m-sex"></i>` : ''}${log && !log.sexActivities?.length ? html`<i></i>` : ''}</span>
     </button>`);
   }
   return cells;
@@ -330,6 +360,7 @@ function inspector(p) {
     <div>
       <h2>${fmtLong(iso)}</h2>
       <p class="muted">${phaseLine(st)}${st.fertility !== 'Low' ? ` · ${st.fertility} fertility` : ''}</p>
+      <p class="inspector-note">${T.phaseCopy(st.phase, st.variant).headline}</p>
       ${tags.length ? html`<div class="chips-inline">${tags.map((t) => html`<span class="chip static">${t}</span>`)}</div>` : ''}
       ${log?.notes ? html`<p class="muted" style="margin-top:12px">${log.notes}</p>` : ''}
     </div>
@@ -356,13 +387,14 @@ function calendar(p) {
           ${['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d) => html`<span class="wd" aria-hidden="true">${d}</span>`)}
           ${monthCells(p)}
         </div>
+        <ul class="legend key-row" aria-label="Key"><li class="k-period"><i></i>Period</li><li class="k-pred"><i></i>Predicted</li>${p.hormonal ? '' : html`<li class="k-fert"><i></i>Fertile</li><li class="k-ov"><i></i>Ovulation</li>`}<li class="k-sex"><i></i>Intimacy</li></ul>
       </div>
       <div class="cal-side">
         <div id="inspector" style="display:grid;gap:16px">${inspector(p)}</div>
         <div>
           <div class="section-title">Next cycles</div>
           <div class="group">${cycles.map((c) => html`
-            <div class="row"><div class="row-main"><div class="row-title">${fmtRange(c.periodStart, c.periodEnd)}</div><div class="row-sub">Fertile ${fmtRange(c.fertileStart, c.fertileEnd)}</div></div><span class="row-end">${relative(diffDays(c.periodStart, TODAY))}</span></div>`)}
+            <div class="row"><div class="row-main"><div class="row-title">${fmtRange(c.periodStart, c.periodEnd)}</div>${p.hormonal ? '' : html`<div class="row-sub">Fertile ${fmtRange(c.fertileStart, c.fertileEnd)}</div>`}</div><span class="row-end">${relative(diffDays(c.periodStart, TODAY))}</span></div>`)}
           </div>
         </div>
       </div>
@@ -371,7 +403,7 @@ function calendar(p) {
 
 // ---------- Log ----------
 
-const emptyLog = () => ({ flow: 'none', cervicalFluid: 'none', opk: 'none', bbt: '', notes: '', sexActivities: [], sexQualities: [], moods: [], symptoms: [] });
+const emptyLog = () => ({ flow: 'none', cervicalFluid: 'none', opk: 'none', bbt: '', notes: '', pain: 'none', events: [], sexActivities: [], sexQualities: [], moods: [], symptoms: [] });
 
 function log(p) {
   const iso = ui.date;
@@ -383,13 +415,34 @@ function log(p) {
       <button class="icon-btn" data-action="log-date" data-d="-1" aria-label="Previous day">${icon('chevron-left')}</button>
       <button class="mid" data-action="pick-log-date" style="position:relative" aria-label="Choose date">
         <h1>${isToday ? 'Today' : fmtDay(iso)}</h1>
-        <p class="muted">${isToday ? fmtShort(iso) + ' · ' : ''}${phaseLine(st)} <span class="saved" id="saved">${icon('check')}</span><span class="sr" id="saved-sr" role="status"></span></p>
+        <p class="muted">${isToday ? fmtShort(iso) + ' · ' : ''}${phaseLine(st)}${st.fertility !== 'Low' ? ` · ${st.fertility} fertility` : ''} <span class="saved" id="saved">${icon('check')}</span><span class="sr" id="saved-sr" role="status"></span></p>
         <input type="date" class="sr" id="log-date-input" value="${iso}" max="${TODAY}" tabindex="-1" aria-hidden="true" style="left:50%;top:100%">
       </button>
       <button class="icon-btn" data-action="log-date" data-d="1" aria-label="Next day" ${isToday ? 'disabled style="opacity:.3"' : ''}>${icon('chevron-right')}</button>
     </div>
 
     <div class="field"><div class="field-head">Flow</div>${seg('flow', T.FLOW, d.flow, 'Flow')}</div>
+
+    ${p.hormonal ? '' : html`<div class="field">
+      <div class="field-head">Cervical fluid</div>${seg('cervicalFluid', T.FLUID, d.cervicalFluid, 'Cervical fluid')}
+      <div class="field-head" style="margin-top:16px">LH test</div>${seg('opk', T.LH, d.opk, 'LH test')}
+      <div class="field-head" style="margin-top:16px">Temperature</div>
+      <input class="input" type="number" inputmode="decimal" step="0.01" min="90" max="110" placeholder="°F, on waking" data-field="bbt" value="${d.bbt}" aria-label="Basal body temperature in degrees Fahrenheit">
+    </div>`}
+
+    <div class="field">
+      <div class="field-head">Mood</div>${chips('moods', T.MOODS, d.moods)}
+    </div>
+
+    <div class="field">
+      <div class="field-head">Body</div>${chips('symptoms', T.SYMPTOMS, d.symptoms)}
+      <div class="field-head" style="margin-top:16px">Pain</div>${seg('pain', T.PAIN, d.pain, 'Pain')}
+    </div>
+
+    <div class="field">
+      <div class="field-head"><span>Energy</span><span class="muted" data-label="energy">${T.ENERGY_LABELS[d.energy - 1] ?? ''}</span></div>
+      ${rating('energy', d.energy)}
+    </div>
 
     <div class="field">
       <div class="field-head">Intimacy</div>
@@ -399,31 +452,18 @@ function log(p) {
       ${chips('sexQualities', T.INTIMACY_NOTES, d.sexQualities)}
     </div>
 
-    <div class="field"><div class="field-head">Cervical fluid</div>${seg('cervicalFluid', T.FLUID, d.cervicalFluid, 'Cervical fluid')}</div>
-
-    <div class="field">
-      <div class="field-head">Temperature</div>
-      <input class="input" type="number" inputmode="decimal" step="0.01" min="90" max="110" placeholder="°F, on waking" data-field="bbt" value="${d.bbt}" aria-label="Basal body temperature in degrees Fahrenheit">
-      <div class="field-head" style="margin-top:16px">LH test</div>
-      ${seg('opk', T.LH, d.opk, 'LH test')}
-    </div>
-
-    <div class="field"><div class="field-head">Mood</div>${chips('moods', T.MOODS, d.moods)}</div>
-    <div class="field"><div class="field-head">Body</div>${chips('symptoms', T.SYMPTOMS, d.symptoms)}</div>
-
-    <div class="field">
-      <div class="field-head"><span>Vitality</span><span class="muted" data-label="energy">${T.VITALITY_LABELS[d.energy - 1] ?? ''}</span></div>
-      ${rating('energy', d.energy)}
-    </div>
+    <div class="field"><div class="field-head">Other factors</div>${chips('events', T.EVENTS, d.events)}</div>
 
     <div class="field"><div class="field-head">Notes</div><textarea class="input" rows="3" placeholder="Anything else" data-field="notes" aria-label="Notes">${d.notes}</textarea></div>
 
     <div><button class="btn quiet danger" id="log-clear" data-action="log-clear" ${p.logs[iso] ? '' : 'hidden'}>Clear entry</button></div>`;
 }
 
+const tick = () => navigator.vibrate?.(6);
 let saveTimer;
 function saveDraft(p, now = true) {
   clearTimeout(saveTimer);
+  if (now) tick();
   const run = () => {
     S.saveLog(p, ui.date, ui.draft);
     const saved = $('#saved');
@@ -432,7 +472,7 @@ function saveDraft(p, now = true) {
     $('#saved-sr').textContent = 'Saved';
     $('#log-clear').hidden = !p.logs[ui.date];
     clearTimeout(saved._t);
-    saved._t = setTimeout(() => { saved.classList.remove('on'); $('#saved-sr').textContent = ''; }, 1400);
+    saved._t = setTimeout(() => { saved.classList.remove('on'); const sr = $('#saved-sr'); if (sr) sr.textContent = ''; }, 1400);
   };
   now ? run() : (saveTimer = setTimeout(run, 400));
 }
@@ -445,17 +485,25 @@ function people() {
   const days = Array.from({ length: 14 }, (_, i) => addDays(TODAY, i));
   return html`
     <div class="page-head"><h1>People</h1><button class="btn" data-action="add-person">${icon('plus')}Add</button></div>
-    <div class="group">${profiles.map((p) => {
+    <div class="people-grid">${profiles.map((p) => {
       const st = status(p, TODAY, TODAY);
       const f = forecast(p, TODAY);
-      return html`<div class="row person ${p.id === activeId ? 'active' : ''}" style="padding:8px 8px 8px 16px">
-        <button class="open" data-action="open-person" data-id="${p.id}" style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;text-align:left;min-height:44px">
+      const c = T.phaseCopy(st.phase, st.variant);
+      return html`<article class="group person-card ${p.id === activeId ? 'active' : ''}">
+        <button class="person-head" data-action="open-person" data-id="${p.id}">
           ${avatar(p, 'lg')}
-          <span class="row-main"><span class="row-title">${p.name}</span><span class="row-sub">${phaseLine(st)}</span></span>
+          <span class="row-main"><span class="row-title">${p.name}<span class="rel">${p.relation}</span></span><span class="row-sub">Day ${st.cycleDay} of ${st.bounds.cycle} · ${PHASE_NAMES[st.phase]}</span></span>
+          <i class="dot p-${st.phase}" aria-hidden="true"></i>
         </button>
-        <span class="row-end ${f.late ? 'warn' : ''}">${f.late ? plural(f.late, 'day') + ' late' : relative(f.daysUntilPeriod)}</span>
-        <button class="icon-btn" data-action="edit-person" data-id="${p.id}" aria-label="Edit ${p.name}">${icon('edit')}</button>
-      </div>`;
+        <div class="person-body"><p>${c.headline}</p><p class="muted"><b>Care cue</b> ${c.partner.b}</p></div>
+        <div class="person-foot">
+          <span class="muted ${f.late ? 'warn' : ''}">${f.late ? plural(f.late, 'day') + ' late' : 'Next period ' + fmtShort(f.nextPeriod) + (f.spread ? ` ±${f.spread}d` : '') + ' · ' + relative(f.daysUntilPeriod)}</span>
+          <span class="person-actions">
+            <button class="btn quiet" data-action="export-person" data-id="${p.id}">${icon('download')}Export</button>
+            <button class="btn quiet" data-action="edit-person" data-id="${p.id}">${icon('edit')}Edit</button>
+          </span>
+        </div>
+      </article>`;
     })}</div>
     ${profiles.length > 1 ? html`
     <div>
@@ -464,7 +512,7 @@ function people() {
         <span></span>${days.map((iso) => html`<span class="h"><b>${parseISO(iso).toLocaleDateString('en-US', { weekday: 'narrow' })}</b>${parseISO(iso).getDate()}</span>`)}
         ${profiles.map((p) => html`<span class="nm"><span class="dot" style="background:${p.color}"></span>${p.name}</span>${days.map((iso) => {
           const s = status(p, iso, TODAY);
-          return html`<span class="c p-${s.phase}" title="${p.name}, ${fmtShort(iso)}: ${phaseLine(s)}"></span>`;
+          return html`<span class="c p-${s.phase}" title="${p.name}, ${fmtShort(iso)}: ${phaseLine(s)}">D${s.cycleDay}</span>`;
         })}`)}
       </div></div>
     </div>` : ''}`;
@@ -472,31 +520,62 @@ function people() {
 
 // ---------- History ----------
 
+function ovulationLine(p) {
+  const f = forecast(p, TODAY);
+  const b = phaseBounds(p);
+  if (f.observed) return `Day ${f.observed.day} · ${f.observed.confirmed ? 'confirmed' : 'from LH test'}`;
+  return `Day ${b.ovulationDay} · estimated`;
+}
+
+// Most-logged tags per phase, plus average desire and energy, from this person's own entries.
+function phasePatterns(p) {
+  const out = Object.fromEntries(PHASE_ORDER.map((k) => [k, { tags: new Map(), desire: [], energy: [], pain: 0, n: 0 }]));
+  for (const [iso, l] of Object.entries(p.logs)) {
+    const b = out[status(p, iso, TODAY).phase];
+    b.n++;
+    [...(l.moods || []), ...(l.symptoms || [])].forEach((t) => b.tags.set(t, (b.tags.get(t) || 0) + 1));
+    if (l.libido) b.desire.push(l.libido);
+    if (l.energy) b.energy.push(l.energy);
+    if (l.pain === 'moderate' || l.pain === 'severe') b.pain++;
+  }
+  return out;
+}
+const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+
 function doctorSummary(p) {
   const b = phaseBounds(p);
-  return [
+  const s = cycleStats(p);
+  const flags = regularity(p);
+  const pat = phasePatterns(p);
+  const lines = [
     `Cycle summary for ${p.name} (${TODAY})`,
-    `Average cycle: ${b.cycle} days`,
-    `Average bleeding: ${b.period} days`,
-    `Estimated ovulation: day ${b.ovulationDay}`,
-    `Luteal phase: ${b.lutealLength} days`,
+    `Cycle length: ${b.cycle} days on average${s.n >= 2 ? `, ranging ${s.min}–${s.max} over ${s.n} cycles` : ''}`,
+    `Bleeding: ${b.period} days on average`,
+    ...(p.hormonal ? ['On hormonal birth control'] : [`Ovulation: ${ovulationLine(p).toLowerCase()}`, `Luteal phase: ${b.lutealLength} days`]),
+    flags.length ? `Outside typical ranges: ${flags.join('; ')}` : 'Within typical ranges (cycle 24–38 days, varying up to 9, bleeding up to 8)',
     `Recent period starts: ${sortedPeriods(p).slice(-6).map((x) => x.start).join(', ')}`,
-  ].join('\n');
+  ];
+  const painDays = Object.values(p.logs).filter((l) => l.pain === 'moderate' || l.pain === 'severe').length;
+  if (painDays) lines.push(`Moderate or severe pain logged on ${plural(painDays, 'day')}`);
+  const heavy = Object.values(p.logs).filter((l) => l.flow === 'heavy').length;
+  if (heavy) lines.push(`Heavy flow logged on ${plural(heavy, 'day')}`);
+  const seen = PHASE_ORDER.filter((k) => pat[k].tags.size).map((k) => `${PHASE_NAMES[k]}: ${[...pat[k].tags.entries()].sort((a, c) => c[1] - a[1]).slice(0, 4).map((e) => T.tagLabel(e[0])).join(', ')}`);
+  if (seen.length) lines.push('Most logged by phase:', ...seen);
+  return lines.join('\n');
 }
 
 function history(p) {
   const b = phaseBounds(p);
+  const s = cycleStats(p);
+  const flags = regularity(p);
   const periods = sortedPeriods(p).reverse();
   const dates = Object.keys(p.logs).sort().reverse();
-
-  const buckets = Object.fromEntries(PHASE_ORDER.map((k) => [k, new Map()]));
-  for (const iso of dates) {
-    const l = p.logs[iso];
-    const map = buckets[status(p, iso, TODAY).phase];
-    [...(l.moods || []), ...(l.symptoms || []), ...(l.libido >= 4 ? ['High desire'] : [])].forEach((t) => map.set(t, (map.get(t) || 0) + 1));
-  }
+  const pat = phasePatterns(p);
+  const longest = Math.max(b.cycle, ...periods.map((per, i) => (i === 0 ? 0 : diffDays(periods[i - 1].start, per.start))));
+  const shown = PHASE_ORDER.filter((k) => pat[k].n);
 
   const kv = (k, v, warn) => html`<div class="row"><span>${k}</span><span class="row-end ${warn ? 'warn' : ''}">${v}</span></div>`;
+  const level = (v) => html`<span class="lvl" aria-hidden="true">${[1, 2, 3, 4, 5].map((n) => html`<i class="${v !== null && Math.round(v) >= n ? 'on' : ''}"></i>`)}</span>`;
   return html`
     <h1>History</h1>
 
@@ -508,7 +587,7 @@ function history(p) {
         <div class="row-main">
           <div class="row-title">${fmtLong(per.start)}</div>
           <div class="row-sub">${i === 0 ? 'Current cycle · ' : plural(len, 'day') + ' · '}${plural(per.length, 'day')} of flow</div>
-          <div class="cycle-bar" aria-hidden="true"><i class="p-menstrual" style="flex:${flow}"></i><i class="p-follicular" style="flex:${len - flow - lut}"></i><i class="p-luteal" style="flex:${lut}"></i></div>
+          <div class="cycle-bar" style="width:${(len / longest) * 100}%" aria-hidden="true"><i class="p-menstrual" style="flex:${flow}"></i><i class="p-follicular" style="flex:${len - flow - lut}"></i><i class="p-luteal" style="flex:${lut}"></i></div>
         </div>
         ${periods.length > 1 ? html`<button class="icon-btn" data-action="remove-period" data-date="${per.start}" aria-label="Remove period starting ${fmtShort(per.start)}">${icon('x')}</button>` : ''}
       </div>`;
@@ -517,20 +596,24 @@ function history(p) {
     <div>
       <div class="section-title">Summary<button class="btn quiet" data-action="copy-summary">${icon('copy')}Copy for doctor</button></div>
       <div class="group kv">
-        ${kv('Cycle length', plural(b.cycle, 'day'), b.cycle < 21 || b.cycle > 35)}
-        ${kv('Bleeding', plural(b.period, 'day'))}
-        ${kv('Ovulation', 'Day ' + b.ovulationDay)}
-        ${kv('Luteal phase', plural(b.lutealLength, 'day'))}
+        ${kv('Cycle length', plural(b.cycle, 'day') + (s.n >= 2 && s.range ? ` · ${s.min}–${s.max}` : ''), b.cycle < 24 || b.cycle > 38)}
+        ${kv('Bleeding', plural(b.period, 'day'), b.period > 8)}
+        ${p.hormonal ? '' : kv('Ovulation', ovulationLine(p))}
+        ${p.hormonal ? '' : kv('Luteal phase', plural(b.lutealLength, 'day'), b.lutealLength < 10)}
+        ${kv('Regularity', flags.length ? 'Worth mentioning' : 'Within typical ranges', flags.length > 0)}
       </div>
+      ${flags.length ? html`<ul class="flags">${flags.map((f) => html`<li>${f}</li>`)}</ul>` : ''}
     </div>
 
-    <div>
-      <div class="section-title">Patterns</div>
-      <div class="group patterns">${PHASE_ORDER.map((k) => {
-        const top = [...buckets[k].entries()].sort((a, c) => c[1] - a[1]).slice(0, 4).map((e) => e[0]);
-        return html`<div class="row"><span class="dot p-${k}"></span><div class="row-main"><div class="row-title">${PHASE_NAMES[k]}</div><div class="row-sub ${top.length ? '' : 'faint'}">${top.length ? top.join(' · ') : '–'}</div></div></div>`;
+    ${shown.length ? html`<div>
+      <div class="section-title">Your patterns</div>
+      <div class="group patterns">${shown.map((k) => {
+        const top = [...pat[k].tags.entries()].sort((a, c) => c[1] - a[1]).slice(0, 4).map((e) => T.tagLabel(e[0]));
+        const d = mean(pat[k].desire), en = mean(pat[k].energy);
+        return html`<div class="row stack"><span class="dot p-${k}" style="margin-top:6px"></span><div class="row-main"><div class="row-title">${PHASE_NAMES[k]}</div>${top.length ? html`<div class="row-sub">${top.join(' · ')}</div>` : ''}</div>
+          <div class="lvls">${d !== null ? html`<span title="Average desire ${d.toFixed(1)} of 5">Desire ${level(d)}</span>` : ''}${en !== null ? html`<span title="Average energy ${en.toFixed(1)} of 5">Energy ${level(en)}</span>` : ''}</div></div>`;
       })}</div>
-    </div>
+    </div>` : ''}
 
     ${dates.length ? html`
     <div>
@@ -546,13 +629,21 @@ function history(p) {
 // ---------- Guide ----------
 
 function guide() {
+  const items = T.GUIDE.filter((g) => ui.cat === 'all' || g.cat === ui.cat);
+  const catLabel = (id) => T.GUIDE_CATEGORIES.find((c) => c.id === id).label;
   return html`
     <h1>Guide</h1>
-    <div class="group">${T.GUIDE.map((g) => html`
-      <details class="row">
-        <summary>${g.title}${icon('chevron-down')}</summary>
-        <div class="answer"><p>${g.body}</p><p class="take">${g.takeaway}</p>${g.source ? html`<p class="src">${g.source}</p>` : ''}</div>
-      </details>`)}
+    <div class="chips" role="group" aria-label="Topic">${T.GUIDE_CATEGORIES.map((c) =>
+      html`<button type="button" class="chip" aria-pressed="${ui.cat === c.id ? 'true' : 'false'}" data-action="guide-cat" data-value="${c.id}">${c.label}</button>`)}</div>
+    <div class="articles">${items.map((g) => html`
+      <article class="group article">
+        <div class="eyebrow p-${g.phase}"><i></i>${catLabel(g.cat)}</div>
+        <h2>${g.title}</h2>
+        <div class="figure">${new Raw(figure(g.id))}</div>
+        <p>${g.body}</p>
+        <p class="take">${g.takeaway}</p>
+        ${g.source ? html`<p class="src">${g.source}</p>` : ''}
+      </article>`)}
     </div>`;
 }
 
@@ -567,24 +658,31 @@ const stepper = (label, name, value, min, max) => html`
   </div></div>`;
 
 function profileForm(v, kind) {
+  const onboard = kind === 'onboard';
+  const options = html`
+    <div class="group">
+      <label class="row"><span>Relationship</span><select class="input" name="relation">${T.RELATIONS.map((r) => html`<option ${r === v.relation ? 'selected' : ''}>${r}</option>`)}</select></label>
+      ${stepper('Luteal phase', 'lutealLength', v.lutealLength, 10, 17)}
+      <div class="row"><span>Color</span><div class="swatches" role="radiogroup" aria-label="Color">
+        ${T.COLORS.map((c) => html`<label style="--c:${c.hex}" title="${c.name}"><input type="radio" name="color" value="${c.hex}" aria-label="${c.name}" ${c.hex === v.color ? 'checked' : ''}></label>`)}
+      </div></div>
+      <label class="row"><span>Hormonal birth control</span><input class="switch" type="checkbox" role="switch" name="hormonal" ${v.hormonal ? 'checked' : ''}></label>
+    </div>`;
   return html`
     <form data-form="${kind}" autocomplete="off">
       <input type="hidden" name="id" value="${v.id ?? ''}">
       <div class="group">
         <label class="row"><span>Name</span><input class="input" name="name" value="${v.name}" required maxlength="32" placeholder="Required" autocapitalize="words" ${kind === 'profile' && v.id ? '' : 'autofocus'}></label>
-        <label class="row"><span>Relationship</span><select class="input" name="relation">${T.RELATIONS.map((r) => html`<option ${r === v.relation ? 'selected' : ''}>${r}</option>`)}</select></label>
-        <label class="row"><span>Last period started</span><input class="input" type="date" name="lastPeriod" value="${v.lastPeriod}" max="${TODAY}" required></label>
+        <label class="row"><span>${onboard ? 'Period started' : 'Last period'}</span><input class="input" type="date" name="lastPeriod" value="${v.lastPeriod}" max="${TODAY}" required></label>
       </div>
+      ${onboard ? html`<div class="quick"><button type="button" class="chip" data-action="last-period" data-offset="0">Today</button><button type="button" class="chip" data-action="last-period" data-offset="1">Yesterday</button></div>` : ''}
       <div class="group" style="margin-top:20px">
         ${stepper('Cycle length', 'cycleLength', v.cycleLength, 20, 45)}
         ${stepper('Period length', 'periodLength', v.periodLength, 2, 10)}
-        ${stepper('Luteal phase', 'lutealLength', v.lutealLength, 10, 17)}
       </div>
-      <div class="group" style="margin-top:20px"><div class="row"><span>Color</span><div class="swatches" role="radiogroup" aria-label="Color">
-        ${T.COLORS.map((c) => html`<label style="--c:${c.hex}" title="${c.name}"><input type="radio" name="color" value="${c.hex}" aria-label="${c.name}" ${c.hex === v.color ? 'checked' : ''}></label>`)}
-      </div></div></div>
+      ${onboard ? html`<details class="more"><summary>More options</summary>${options}</details>` : html`<div style="margin-top:20px">${options}</div>`}
       <div style="margin-top:24px;display:grid;gap:8px">
-        <button class="btn primary block" type="submit">${kind === 'onboard' ? 'Create profile' : 'Save'}</button>
+        <button class="btn primary block" type="submit">${onboard ? 'Get started' : 'Save'}</button>
         ${kind === 'profile' && v.id ? html`<button type="button" class="btn quiet danger block" data-action="delete-person" data-id="${v.id}">Delete ${v.name}</button>` : ''}
       </div>
     </form>`;
@@ -594,21 +692,50 @@ function profileDefaults(p) {
   const used = S.get().profiles.map((x) => x.color);
   return p ? {
     id: p.id, name: p.name, relation: p.relation, color: p.color, cycleLength: p.cycleLength, periodLength: p.periodLength,
-    lutealLength: p.lutealLength, lastPeriod: latestStart(p, TODAY),
+    lutealLength: p.lutealLength, hormonal: p.hormonal, lastPeriod: latestStart(p, TODAY),
   } : {
-    id: '', name: '', relation: S.get().profiles.length ? 'Partner' : 'Self', cycleLength: 28, periodLength: 5, lutealLength: 14,
+    id: '', name: '', relation: S.get().profiles.length ? 'Partner' : 'Self', cycleLength: 28, periodLength: 5, lutealLength: 14, hormonal: false,
     lastPeriod: addDays(TODAY, -7), color: (T.COLORS.find((c) => !used.includes(c.hex)) ?? T.COLORS[0]).hex,
   };
 }
 
+// The welcome ring previews exactly what Today will show for the numbers entered.
+function previewProfile(v) {
+  return S.normalizeProfile({ ...v, periods: [{ start: v.lastPeriod || addDays(TODAY, -7), length: v.periodLength }] });
+}
+
+function previewInner(p) {
+  const st = status(p, TODAY, TODAY);
+  return html`${new Raw(ringSvg(p))}<div class="ring-center"><span class="ring-day-label">Day</span><span class="ring-day">${st.cycleDay}</span><span class="ring-phase p-${st.phase}">${PHASE_NAMES[st.phase]}</span></div>`;
+}
+
+function previewNote(p) {
+  const f = forecast(p, TODAY);
+  return f.late ? `Period ${plural(f.late, 'day')} late` : `Next period ${relative(f.daysUntilPeriod).toLowerCase()}`;
+}
+
+function updatePreview(form) {
+  const v = readForm(form);
+  if (!v.lastPeriod) return;
+  const p = previewProfile(v);
+  $('#preview').innerHTML = previewInner(p).s;
+  $('#note').textContent = previewNote(p);
+  $('#art').className = `welcome-art p-${status(p, TODAY, TODAY).phase}`;
+}
+
 function onboarding() {
+  const p = previewProfile(profileDefaults(null));
   return html`
     <div class="welcome fade-in">
-      <h1>Cadence</h1>
-      ${profileForm(profileDefaults(null), 'onboard')}
-      <div class="alt">
-        <label class="btn quiet">Import backup<input type="file" accept=".json,application/json" data-import hidden></label>
-        <button class="btn quiet" data-action="sample">Try sample data</button>
+      <div class="welcome-art p-${status(p, TODAY, TODAY).phase}" id="art"><div class="ring intro" id="preview" aria-hidden="true">${previewInner(p)}</div><p class="muted num" id="note" role="status">${previewNote(p)}</p></div>
+      <div class="welcome-form">
+        <h1>Welcome to Cadence</h1>
+        ${profileForm(profileDefaults(null), 'onboard')}
+        <p class="privacy muted">${icon('lock')}Stays on this device. No account.</p>
+        <div class="alt">
+          <label class="btn quiet">Import backup<input type="file" accept=".json,application/json" data-import hidden></label>
+          <button class="btn quiet" data-action="sample">Try sample data</button>
+        </div>
       </div>
     </div>`;
 }
@@ -643,7 +770,8 @@ function moreSheet() {
     <div class="group">
       <button class="row" data-action="sample" data-confirm="Replace everything? Tap again">${icon('people')}<span>Load sample data</span></button>
       <button class="row" data-action="wipe" data-confirm="Erase everything? Tap again" style="color:var(--red)">${icon('trash')}<span>Erase all data</span></button>
-    </div>`);
+    </div>
+    <p class="foot muted">Stored only on this device.${navigator.serviceWorker?.controller ? ' Works offline.' : ''}</p>`);
 }
 
 function periodSheet(p) {
@@ -708,6 +836,7 @@ function render() {
   const paint = () => {
     $('#bar').hidden = !p;
     $('.nav').hidden = !p;
+    $('.app').classList.toggle('no-nav', !p);
     if (p) {
       $('#bar').innerHTML = html`
         <button class="who" data-action="switcher" aria-label="Switch person">${avatar(p)}<span>${p.name}</span>${icon('chevron-down')}</button>
@@ -722,8 +851,8 @@ function render() {
 
   const changed = lastView !== undefined && lastView !== view;
   lastView = view;
-  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (changed && document.startViewTransition && !reduce) document.startViewTransition(paint); else paint();
+  paint();
+  if (changed) { main.classList.remove('enter'); void main.offsetWidth; main.classList.add('enter'); }
 }
 
 // ---------- Actions ----------
@@ -735,7 +864,7 @@ function go(view) {
 
 function readForm(form) {
   const f = Object.fromEntries(new FormData(form));
-  return { ...f, cycleLength: +f.cycleLength, periodLength: +f.periodLength, lutealLength: +f.lutealLength };
+  return { ...f, cycleLength: +f.cycleLength, periodLength: +f.periodLength, lutealLength: +(f.lutealLength ?? 14), hormonal: f.hormonal === 'on' };
 }
 
 const actions = {
@@ -761,7 +890,15 @@ const actions = {
     const v = clamp(Number(input.value) + Number(el.dataset.d), Number(input.dataset.min), Number(input.dataset.max));
     input.value = v;
     el.closest('form').querySelector(`[data-out="${el.dataset.name}"]`).textContent = plural(v, 'day');
+    tick();
+    if (el.closest('form').dataset.form === 'onboard') updatePreview(el.closest('form'));
   },
+  'last-period': (el) => {
+    const form = el.closest('form');
+    form.elements.lastPeriod.value = addDays(TODAY, -Number(el.dataset.offset));
+    updatePreview(form);
+  },
+  tab: (el) => { ui.tab = el.dataset.value; paintToday(S.active()); },
 
   // Today
   'reset-day': () => { ui.day = null; paintToday(S.active()); },
@@ -807,7 +944,7 @@ const actions = {
     const n = Number(el.dataset.value);
     if (ui.draft[key] === n) delete ui.draft[key]; else ui.draft[key] = n;
     el.parentElement.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', Number(b.dataset.value) === ui.draft[key] ? 'true' : 'false'));
-    const labels = key === 'libido' ? T.DESIRE_LABELS : T.VITALITY_LABELS;
+    const labels = key === 'libido' ? T.DESIRE_LABELS : T.ENERGY_LABELS;
     $(`[data-label="${key}"]`).textContent = labels[ui.draft[key] - 1] ?? '';
     saveDraft(S.active());
   },
@@ -819,6 +956,8 @@ const actions = {
   'edit-entry': (el) => { ui.date = el.dataset.date; go('log'); },
 
   // Data
+  'guide-cat': (el) => { ui.cat = el.dataset.value; render(); },
+  'export-person': (el) => { const p = S.get().profiles.find((x) => x.id === el.dataset.id); if (p) { download(S.exportProfile(p), `cadence_${slug(p.name)}.json`); toast(`Exported ${p.name}`); } },
   'export-all': () => { download(S.exportVault(), `cadence_backup_${TODAY}.json`); closeSheet(); toast('Backup downloaded'); },
   'export-one': () => { const p = S.active(); download(S.exportProfile(p), `cadence_${slug(p.name)}.json`); closeSheet(); toast(`Exported ${p.name}`); },
   sample: () => { closeSheet(); ui.day = null; toast('Sample data loaded', S.loadSample()); },
@@ -861,6 +1000,9 @@ document.addEventListener('submit', (e) => {
 });
 
 document.addEventListener('input', (e) => {
+  if (e.target.id === 'scrub') return setDay(S.active(), Number(e.target.value));
+  const onboard = e.target.closest?.('form[data-form="onboard"]');
+  if (onboard) return updatePreview(onboard);
   const field = e.target.dataset?.field;
   if (!field || !ui.draft) return;
   ui.draft[field] = e.target.value;
@@ -868,6 +1010,8 @@ document.addEventListener('input', (e) => {
 });
 
 document.addEventListener('change', async (e) => {
+  const onboard = e.target.closest?.('form[data-form="onboard"]');
+  if (onboard && !e.target.matches('[data-import]')) return updatePreview(onboard);
   if (e.target.id === 'log-date-input') {
     ui.date = e.target.value && diffDays(e.target.value, TODAY) <= 0 ? e.target.value : TODAY;
     return render();

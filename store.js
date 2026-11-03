@@ -2,7 +2,7 @@
 // STORAGE_KEY and file formats are unchanged from earlier versions so existing data keeps working.
 
 import { addDays, todayISO, clamp, averageCycleLength } from './cycle.js';
-import { COLORS } from './content.js';
+import { COLORS, PAIN, canonicalTag } from './content.js';
 
 export const STORAGE_KEY = 'cadence_pwa_state_v2';
 const LEGACY_VIEWS = { cycle: 'today', checkin: 'log', atlas: 'guide' };
@@ -12,6 +12,7 @@ const LEGACY_VIEWS = { cycle: 'today', checkin: 'log', atlas: 'guide' };
 
 const text = (v, fallback = '') => (typeof v === 'string' ? v : fallback);
 const list = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+const tags = (v) => [...new Set(list(v).map(canonicalTag))];
 const isISO = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const uid = () => 'p_' + (globalThis.crypto?.randomUUID?.().slice(0, 8) ?? Date.now().toString(36));
 
@@ -19,13 +20,15 @@ function normalizeLog(l) {
   const out = {
     flow: text(l.flow, 'none'),
     sexActivities: list(l.sexActivities),
-    sexQualities: list(l.sexQualities),
+    sexQualities: tags(l.sexQualities),
     cervicalFluid: text(l.cervicalFluid, 'none'),
     opk: text(l.opk, 'none'),
-    moods: list(l.moods),
-    symptoms: list(l.symptoms),
+    moods: tags(l.moods),
+    symptoms: tags(l.symptoms),
     bbt: l.bbt === undefined || l.bbt === null ? '' : String(l.bbt),
     notes: text(l.notes),
+    pain: PAIN.some((x) => x.id === l.pain) ? l.pain : 'none',
+    events: tags(l.events),
   };
   if (Number(l.libido) >= 1) out.libido = clamp(Math.round(Number(l.libido)), 1, 5);
   if (Number(l.energy) >= 1) out.energy = clamp(Math.round(Number(l.energy)), 1, 5);
@@ -50,6 +53,7 @@ export function normalizeProfile(raw, today = todayISO()) {
     name: text(p.name).trim().slice(0, 32) || 'Me',
     relation: text(p.relation, 'Self'),
     goal: text(p.goal, 'rhythm'), // kept for compatibility with older exports; not shown
+    hormonal: Boolean(p.hormonal), // on hormonal birth control: no fertility predictions
     color: COLORS.some((c) => c.hex === p.color) ? p.color : COLORS[0].hex,
     cycleLength: clamp(Number(p.cycleLength) || 28, 20, 45),
     periodLength,
@@ -68,6 +72,8 @@ export function normalizeState(raw) {
 
 // ---------- Store ----------
 
+// Top-level fields this app does not own (e.g. the original app's theme) are written back untouched.
+let extra = {};
 let state = load();
 const listeners = new Set();
 
@@ -75,8 +81,10 @@ function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY));
     if (raw && Array.isArray(raw.profiles)) {
+      const { profiles, activeProfileId, activeView, ...rest } = raw;
+      extra = rest;
       const s = normalizeState(raw);
-      s.view = LEGACY_VIEWS[raw.activeView] || raw.activeView || 'today';
+      s.view = LEGACY_VIEWS[activeView] || activeView || 'today';
       return s;
     }
   } catch { /* fall through to empty state */ }
@@ -86,7 +94,8 @@ function load() {
 function persist() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      theme: 'light', // legacy field; the app follows the system theme
+      theme: 'light', // legacy field; this app follows the system theme
+      ...extra,
       activeProfileId: state.activeProfileId,
       activeView: state.view,
       profiles: state.profiles,
@@ -172,7 +181,7 @@ export function removePeriod(profile, start) {
 export const saveLog = (profile, iso, log) => commit(() => {
   const clean = normalizeLog(log);
   const empty = clean.flow === 'none' && clean.cervicalFluid === 'none' && clean.opk === 'none' && !clean.bbt && !clean.notes
-    && !clean.sexActivities.length && !clean.sexQualities.length && !clean.moods.length && !clean.symptoms.length
+    && clean.pain === 'none' && !clean.events.length && !clean.sexActivities.length && !clean.sexQualities.length && !clean.moods.length && !clean.symptoms.length
     && clean.libido === undefined && clean.energy === undefined;
   if (empty) delete profile.logs[iso];
   else profile.logs[iso] = clean;
@@ -221,15 +230,15 @@ export function loadSample(today = todayISO()) {
   };
   const profiles = [
     mk('p_maya', 'Maya', 'Self', '#C25949', 28, 5, 14, 13, {
-      [today]: { cervicalFluid: 'eggwhite', opk: 'pos', libido: 5, energy: 5, bbt: '97.38', moods: ['Focused', 'Social'], symptoms: ['High stamina', 'Clear skin'], sexActivities: ['unprotected'], sexQualities: ['Deep connection'], notes: 'Clear fluid, strong focus.' },
+      [today]: { cervicalFluid: 'eggwhite', opk: 'pos', libido: 5, energy: 5, bbt: '97.38', moods: ['Focused', 'Social'], symptoms: ['High Stamina', 'Clear Skin'], sexActivities: ['unprotected'], sexQualities: ['Deep Connection'], notes: 'Clear fluid, strong focus.' },
       [addDays(today, -2)]: { cervicalFluid: 'creamy', opk: 'neg', libido: 4, energy: 4, bbt: '97.32', moods: ['Calm', 'Creative'], sexActivities: ['protected'] },
       [addDays(today, -12)]: { flow: 'medium', libido: 2, energy: 2, bbt: '97.26', moods: ['Introverted'], symptoms: ['Cramps'] },
     }),
     mk('p_elena', 'Elena', 'Partner', '#3E7A6E', 30, 4, 14, 22, {
-      [today]: { cervicalFluid: 'sticky', libido: 3, energy: 3, bbt: '98.12', moods: ['Sensitive'], symptoms: ['Bloating', 'Cravings'] },
+      [today]: { cervicalFluid: 'sticky', libido: 3, energy: 3, bbt: '98.12', moods: ['Sensitive'], symptoms: ['Bloating', 'Salt/Sweet Cravings'] },
     }),
     mk('p_chloe', 'Chloe', 'Family', '#7C5879', 27, 5, 13, 2, {
-      [today]: { flow: 'medium', libido: 1, energy: 2, bbt: '97.29', symptoms: ['Cramps', 'Lower back ache'] },
+      [today]: { flow: 'medium', libido: 1, energy: 2, bbt: '97.29', symptoms: ['Cramps', 'Lower Back Ache'] },
     }),
   ];
   return commit((s) => { s.profiles = profiles; s.activeProfileId = 'p_maya'; s.view = 'today'; });

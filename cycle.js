@@ -56,14 +56,73 @@ export function inLoggedPeriod(p, iso) {
 }
 
 // Average of observed cycle lengths (18–50 days). Returns null if there is nothing to average.
-export function averageCycleLength(p) {
+export const averageCycleLength = (p) => cycleStats(p).mean;
+
+
+// Observed cycle lengths (18–50 days) and how much they vary.
+export function cycleStats(p) {
   const list = sortedPeriods(p);
   const gaps = [];
   for (let i = 1; i < list.length; i++) {
     const d = diffDays(list[i].start, list[i - 1].start);
     if (d >= 18 && d <= 50) gaps.push(d);
   }
-  return gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : null;
+  const n = gaps.length;
+  if (!n) return { n: 0, mean: null, min: null, max: null, range: 0, spread: 0 };
+  const min = Math.min(...gaps), max = Math.max(...gaps);
+  const mean = Math.round(gaps.reduce((a, b) => a + b, 0) / n);
+  // Only claim a margin once there are three cycles to base it on.
+  const spread = n >= 3 ? Math.min(5, Math.ceil((max - min) / 2)) : 0;
+  return { n, mean, min, max, range: max - min, spread };
+}
+
+// Reference ranges for "worth mentioning to a clinician" (FIGO 2018 normal menstrual parameters).
+export function regularity(p) {
+  const s = cycleStats(p);
+  const b = phaseBounds(p);
+  const flags = [];
+  if (b.cycle < 24 || b.cycle > 38) flags.push(`Cycles average ${b.cycle} days (typical 24–38)`);
+  if (s.range > 9) flags.push(`Cycle length varies by ${s.range} days (typical up to 9)`);
+  if (b.period > 8) flags.push(`Bleeding lasts ${b.period} days (typical up to 8)`);
+  if (b.lutealLength < 10) flags.push(`Luteal phase is ${b.lutealLength} days (usually 10 or more)`);
+  return flags;
+}
+
+// What the person's own logs say about ovulation in the current cycle.
+//   bbt: waking temperature stays above the previous six readings for three days (confirmed after the fact)
+//   lh:  first positive LH test; ovulation usually follows within 12–36 hours (still an estimate)
+export function observedOvulation(p, today = todayISO()) {
+  if (p.hormonal) return null;
+  const start = latestStart(p, today);
+  const logs = p.logs || {};
+  const span = Math.min(60, diffDays(today, start));
+  if (span < 0) return null;
+  const days = Array.from({ length: span + 1 }, (_, i) => addDays(start, i));
+  const temps = days.map((iso) => {
+    const t = parseFloat(logs[iso]?.bbt);
+    return t > 90 && t < 110 ? t : null;
+  });
+  for (let i = 5; i + 2 < temps.length; i++) {
+    const prior = temps.slice(Math.max(0, i - 6), i).filter((t) => t !== null);
+    if (prior.length < 4 || temps[i] === null || temps[i + 1] === null || temps[i + 2] === null) continue;
+    const cover = Math.max(...prior) + 0.1;
+    if (temps[i] >= cover && temps[i + 1] >= cover && temps[i + 2] >= Math.max(...prior) + 0.2) {
+      return { iso: days[i - 1], day: i, method: 'bbt', confirmed: true };
+    }
+  }
+  const pos = days.find((iso) => logs[iso]?.opk === 'pos');
+  if (pos) {
+    const iso = addDays(pos, 1);
+    return { iso, day: diffDays(iso, start) + 1, method: 'lh', confirmed: diffDays(today, iso) > 1 };
+  }
+  return null;
+}
+
+// Fertility on `iso` given an observed ovulation date.
+function fertilityFrom(obs, iso) {
+  const d = diffDays(obs.iso, iso);
+  if (d < 0 || d > 5) return 'Low';
+  return d <= 2 ? 'Peak' : 'High';
 }
 
 // ---------- Phases ----------
@@ -84,8 +143,8 @@ export function phaseBounds(p) {
     follicular: [period + 1, ovStart - 1],
     ovulatory: [ovStart, ovEnd],
     luteal: [ovEnd + 1, cycle],
-    // Sperm survive up to ~5 days, the egg ~1 day.
-    fertile: [Math.max(period + 1, ovulationDay - 5), ovulationDay + 1],
+    // The fertile window is the six days ending on ovulation day (Wilcox 1995).
+    fertile: [Math.max(period + 1, ovulationDay - 5), ovulationDay],
   };
 }
 
@@ -110,13 +169,16 @@ export function dayInfo(p, day) {
 
   let phase, variant;
   if (day <= b.menstrual[1]) { phase = 'menstrual'; variant = day <= 2 ? 'early' : 'late'; }
-  else if (day <= b.follicular[1]) { phase = 'follicular'; variant = 'base'; }
+  else if (day <= b.follicular[1]) { phase = 'follicular'; variant = day >= Math.round((b.follicular[0] + b.follicular[1]) / 2) ? 'late' : 'base'; }
   else if (day <= b.ovulatory[1]) { phase = 'ovulatory'; variant = day === ovulationDay ? 'peak' : 'window'; }
   else { phase = 'luteal'; variant = cycle - day < 5 ? 'late' : 'early'; }
 
+  // Chances are highest in the two days before ovulation and on ovulation day itself.
   let fertility = 'Low';
-  if (day >= ovulationDay - 1 && day <= ovulationDay) fertility = 'Peak';
-  else if (day >= b.fertile[0] && day <= b.fertile[1]) fertility = 'High';
+  if (!p.hormonal) {
+    if (day >= ovulationDay - 2 && day <= ovulationDay) fertility = 'Peak';
+    else if (day >= b.fertile[0] && day <= b.fertile[1]) fertility = 'High';
+  }
 
   return { day, phase, variant, fertility, estrogen, progesterone, lh, expectedBbt: bbt };
 }
@@ -147,7 +209,11 @@ export function status(p, iso, today = todayISO()) {
     else day = (d % b.cycle) + 1; // projection into future cycles
   }
 
-  return { ...dayInfo(p, day), cycleDay: day, late, bounds: b, anchor };
+  const info = dayInfo(p, day);
+  const current = anchor && anchor === starts[starts.length - 1] && diffDays(iso, anchor) < b.cycle + LATE_WINDOW;
+  const obs = current && !p.hormonal ? observedOvulation(p, today) : null;
+  if (obs) info.fertility = fertilityFrom(obs, iso);
+  return { ...info, cycleDay: day, late, bounds: b, anchor };
 }
 
 // What is coming up, relative to `today`.
@@ -161,21 +227,31 @@ export function forecast(p, today = todayISO()) {
     expected = addDays(start, k * b.cycle);
     late = 0;
   }
-  const periodEnd = addDays(expected, b.period - 1);
 
   let ovulation = addDays(expected, b.ovulationDay - 1 - b.cycle);
   if (diffDays(ovulation, today) < 0) ovulation = addDays(expected, b.ovulationDay - 1);
   let lutealStart = addDays(expected, b.luteal[0] - 1 - b.cycle);
   if (diffDays(lutealStart, today) < 0) lutealStart = addDays(expected, b.luteal[0] - 1);
 
+  // Own signs beat the average: once ovulation is seen, the next period is about one luteal phase later.
+  const observed = observedOvulation(p, today);
+  if (observed && diffDays(observed.iso, start) >= 0 && diffDays(observed.iso, start) < b.cycle) {
+    ovulation = observed.iso;
+    lutealStart = addDays(observed.iso, 2);
+    expected = addDays(observed.iso, b.lutealLength);
+    late = Math.max(0, diffDays(today, expected));
+  }
+
   return {
     nextPeriod: expected,
-    nextPeriodEnd: periodEnd,
+    nextPeriodEnd: addDays(expected, b.period - 1),
     daysUntilPeriod: diffDays(expected, today),
     late,
+    spread: observed ? 0 : cycleStats(p).spread,
     ovulation,
+    observed,
     fertileStart: addDays(ovulation, -5),
-    fertileEnd: addDays(ovulation, 1),
+    fertileEnd: ovulation,
     lutealStart,
   };
 }
@@ -191,21 +267,31 @@ export function upcomingCycles(p, today = todayISO(), count = 3) {
       periodStart,
       periodEnd: addDays(periodStart, b.period - 1),
       fertileStart: addDays(ovulation, -5),
-      fertileEnd: addDays(ovulation, 1),
+      fertileEnd: ovulation,
     };
   });
 }
 
 // Calendar classification for one day.
-export function calendarDay(p, iso, today = todayISO()) {
+export function calendarDay(p, iso, today = todayISO(), obs = observedOvulation(p, today)) {
   const s = status(p, iso, today);
   const b = s.bounds;
   const logged = inLoggedPeriod(p, iso);
+  const start = latestStart(p, today);
+  const inCurrent = obs && diffDays(iso, start) >= 0 && diffDays(iso, start) < b.cycle;
+  let fertile = s.cycleDay >= b.fertile[0] && s.cycleDay <= b.fertile[1];
+  let ovulation = s.cycleDay === b.ovulationDay;
+  if (inCurrent) {
+    fertile = diffDays(obs.iso, iso) >= 0 && diffDays(obs.iso, iso) <= 5;
+    ovulation = iso === obs.iso;
+  }
+  if (p.hormonal) { fertile = false; ovulation = false; }
   return {
     ...s,
     logged,
-    predicted: !logged && s.cycleDay <= b.period && iso > latestStart(p, today),
-    fertile: s.cycleDay >= b.fertile[0] && s.cycleDay <= b.fertile[1],
-    ovulation: s.cycleDay === b.ovulationDay,
+    predicted: !logged && s.cycleDay <= b.period && iso > start,
+    fertile,
+    ovulation,
+    confirmed: Boolean(inCurrent && ovulation && obs.confirmed),
   };
 }

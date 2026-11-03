@@ -68,3 +68,19 @@ test('setPeriod updates average cycle length; removePeriod keeps one anchor', ()
   S.removePeriod(S.active(), S.active().periods[0].start);
   assert.equal(S.active().periods.length, 1);
 });
+
+test('tags keep their original ids, and the redesign spellings migrate back', () => {
+  const p = S.normalizeProfile({
+    name: 'T', periods: [{ start: '2026-10-01', length: 5 }],
+    logs: { '2026-10-02': { moods: ['Warm / Affectionate', 'Affectionate', 'brain fog'], symptoms: ['High stamina', 'Salt/Sweet Cravings', 'Cravings'], sexQualities: ['Pelvic pain'] } },
+  }, '2026-11-02');
+  const l = p.logs['2026-10-02'];
+  assert.deepEqual(l.moods, ['Warm / Affectionate', 'Brain Fog']);
+  assert.deepEqual(l.symptoms, ['High Stamina', 'Salt/Sweet Cravings']);
+  assert.deepEqual(l.sexQualities, ['Pelvic Pain / Dyspareunia']);
+});
+
+test('unknown tags are kept as typed', () => {
+  const p = S.normalizeProfile({ name: 'T', periods: [{ start: '2026-10-01' }], logs: { '2026-10-02': { moods: ['Custom'] } } });
+  assert.deepEqual(p.logs['2026-10-02'].moods, ['Custom']);
+});

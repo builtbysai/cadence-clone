@@ -20,6 +20,7 @@ Push to `main`. GitHub Pages serves the repository root. All asset paths are rel
 | `cycle.js` | Pure cycle model: dates, phases, forecasts. No DOM. |
 | `content.js` | All copy and option lists. |
 | `store.js` | State, localStorage, import/export, undo. No DOM. |
+| `figures.js` | SVG builders for the Guide and tendencies chart. |
 | `app.js` | UI: views, sheets, events. |
 | `styles.css` | Design tokens and components. |
 | `sw.js` | Offline cache. |

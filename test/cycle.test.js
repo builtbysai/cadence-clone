@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addDays, diffDays, phaseBounds, status, forecast, upcomingCycles, calendarDay, averageCycleLength, dayInfo } from '../cycle.js';
+import { addDays, diffDays, phaseBounds, status, forecast, upcomingCycles, calendarDay, averageCycleLength, dayInfo, cycleStats, regularity, observedOvulation } from '../cycle.js';
 
 const TODAY = '2026-11-02';
 const profile = (over = {}) => ({
@@ -23,7 +23,7 @@ test('phase bounds for a 28-day cycle', () => {
   assert.deepEqual(b.ovulatory, [11, 15]);
   assert.deepEqual(b.luteal, [16, 28]);
   assert.equal(b.lutealLength, 14);
-  assert.deepEqual(b.fertile, [9, 15]);
+  assert.deepEqual(b.fertile, [9, 14]);
 });
 
 test('phase bounds stay valid for extreme settings', () => {
@@ -82,7 +82,7 @@ test('forecast: next period, ovulation and fertile window', () => {
   assert.equal(f.daysUntilPeriod, 15);
   assert.equal(f.ovulation, TODAY);
   assert.equal(f.fertileStart, addDays(TODAY, -5));
-  assert.equal(f.fertileEnd, addDays(TODAY, 1));
+  assert.equal(f.fertileEnd, TODAY);
 });
 
 test('upcomingCycles spaces cycles by the cycle length', () => {
@@ -113,4 +113,62 @@ test('dayInfo variants cover every day without gaps', () => {
     assert.ok(['menstrual', 'follicular', 'ovulatory', 'luteal'].includes(i.phase));
     assert.ok(i.variant);
   }
+});
+
+test('follicular splits into mid and late', () => {
+  const p = { cycleLength: 28, periodLength: 5, lutealLength: 14 };
+  assert.equal(dayInfo(p, 6).variant, 'base');
+  assert.equal(dayInfo(p, 10).variant, 'late');
+});
+
+test('fertile window is six days ending on ovulation; peak is the last three', () => {
+  const p = profile();
+  assert.equal(dayInfo(p, 11).fertility, 'High');
+  assert.equal(dayInfo(p, 12).fertility, 'Peak');
+  assert.equal(dayInfo(p, 14).fertility, 'Peak');
+  assert.equal(dayInfo(p, 15).fertility, 'Low');
+  assert.equal(dayInfo(profile({ hormonal: true }), 13).fertility, 'Low');
+});
+
+test('cycleStats gives a margin only after three cycles', () => {
+  const mk = (...gaps) => {
+    let d = '2026-01-01';
+    const periods = [{ start: d, length: 5 }];
+    for (const g of gaps) { d = addDays(d, g); periods.push({ start: d, length: 5 }); }
+    return profile({ periods });
+  };
+  assert.equal(cycleStats(mk(28, 30)).spread, 0);
+  const s = cycleStats(mk(26, 30, 28));
+  assert.deepEqual([s.n, s.mean, s.range, s.spread], [3, 28, 4, 2]);
+});
+
+test('regularity follows FIGO ranges', () => {
+  assert.deepEqual(regularity(profile()), []);
+  assert.equal(regularity(profile({ cycleLength: 42 })).length, 1);
+  assert.equal(regularity(profile({ periodLength: 9 })).length, 1);
+});
+
+test('own logs move ovulation and the next period', () => {
+  const start = addDays(TODAY, -13);
+  const p = profile({ logs: { [TODAY]: { opk: 'pos' } } });
+  const o = observedOvulation(p, TODAY);
+  assert.deepEqual([o.iso, o.method, o.confirmed], [addDays(TODAY, 1), 'lh', false]);
+  const f = forecast(p, TODAY);
+  assert.equal(f.ovulation, addDays(TODAY, 1));
+  assert.equal(f.nextPeriod, addDays(TODAY, 15));
+  assert.equal(status(p, TODAY, TODAY).fertility, 'Peak');
+  assert.equal(observedOvulation(profile({ hormonal: true, logs: { [TODAY]: { opk: 'pos' } } }), TODAY), null);
+  assert.ok(start);
+});
+
+test('three high temperatures after six lower ones confirm ovulation', () => {
+  const start = addDays(TODAY, -15);
+  const logs = {};
+  const temps = [97.2, 97.3, 97.2, 97.3, 97.2, 97.3, 97.2, 97.3, 97.2, 97.3, 97.2, 97.9, 98.0, 98.1];
+  temps.forEach((t, i) => { logs[addDays(start, i)] = { bbt: String(t) }; });
+  const p = profile({ periods: [{ start, length: 5 }], logs });
+  const o = observedOvulation(p, TODAY);
+  assert.equal(o.method, 'bbt');
+  assert.equal(o.confirmed, true);
+  assert.equal(o.iso, addDays(start, 10));
 });
