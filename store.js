@@ -210,7 +210,7 @@ export function importData(parsed) {
     return { message: `Restored ${incoming.profiles.length} ${incoming.profiles.length === 1 ? 'profile' : 'profiles'}`, undo };
   }
   if (parsed && parsed.name && Array.isArray(parsed.periods)) return addImported(parsed);
-  throw new Error('Not a Cadence file');
+  throw new Error('Not a Tide file');
 }
 
 function addImported(raw) {

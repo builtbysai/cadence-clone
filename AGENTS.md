@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Cadence is a private, on-device cycle tracker (PWA). Vanilla JS ES modules, no build, no dependencies, no network calls.
+Tide is a private, on-device cycle tracker (PWA). Vanilla JS ES modules, no build, no dependencies, no network calls.
 
 ## Commands
 

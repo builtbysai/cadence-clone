@@ -1,4 +1,4 @@
-# Cadence
+# Tide
 
 A private cycle tracker. Everything stays on your device.
 

@@ -1,4 +1,4 @@
-// Cadence UI. Views are template functions: (profile) => html. Events are delegated via data-action.
+// Tide UI. Views are template functions: (profile) => html. Events are delegated via data-action.
 // Model lives in cycle.js, copy in content.js, state in store.js.
 
 import { addDays, diffDays, todayISO, parseISO, fmtShort, fmtLong, fmtRange, relative, status, forecast, dayInfo, upcomingCycles, calendarDay, phaseBounds, sortedPeriods, latestStart, averageCycleLength, cycleStats, regularity, observedOvulation, clamp, PHASE_NAMES, PHASE_ORDER } from './cycle.js';
@@ -729,7 +729,7 @@ function onboarding() {
     <div class="welcome fade-in">
       <div class="welcome-art p-${status(p, TODAY, TODAY).phase}" id="art"><div class="ring intro" id="preview" aria-hidden="true">${previewInner(p)}</div><p class="muted num" id="note" role="status">${previewNote(p)}</p></div>
       <div class="welcome-form">
-        <h1>Welcome to Cadence</h1>
+        <h1>Welcome to Tide</h1>
         ${profileForm(profileDefaults(null), 'onboard')}
         <p class="privacy muted">${icon('lock')}Stays on this device. No account.</p>
         <div class="alt">
