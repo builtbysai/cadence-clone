@@ -1,19 +1,18 @@
 {
+  "id": "./",
   "name": "Cadence",
   "short_name": "Cadence",
-  "description": "Minimalist cycle, intimacy, and body literacy studio.",
-  "start_url": "./index.html",
+  "description": "Private cycle awareness. Everything stays on your device.",
+  "lang": "en",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#F7F3EE",
-  "theme_color": "#F7F3EE",
-  "orientation": "portrait-primary",
+  "background_color": "#F6F5F2",
+  "theme_color": "#F6F5F2",
   "icons": [
-    {
-      "src": "icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    }
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
   ]
 }

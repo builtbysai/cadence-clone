@@ -1,0 +1,70 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as S from '../store.js';
+
+const wipe = () => S.wipe();
+
+test('storage key is unchanged', () => {
+  assert.equal(S.STORAGE_KEY, 'cadence_pwa_state_v2');
+});
+
+test('normalizeProfile repairs bad input', () => {
+  const p = S.normalizeProfile({ name: '  ', cycleLength: 999, periodLength: 'x', color: 'nope', periods: [{ start: 'bad' }], logs: { '2026-01-01': { libido: 9, moods: ['a', 3] }, nope: {} } }, '2026-11-02');
+  assert.equal(p.name, 'Me');
+  assert.equal(p.cycleLength, 45);
+  assert.equal(p.periodLength, 5);
+  assert.equal(p.periods.length, 1);
+  assert.equal(p.logs['2026-01-01'].libido, 5);
+  assert.deepEqual(p.logs['2026-01-01'].moods, ['a']);
+  assert.equal(p.logs.nope, undefined);
+  assert.match(p.color, /^#/);
+});
+
+test('imports a vault, a single profile and a bare profile', () => {
+  wipe();
+  const raw = { name: 'Ada', periods: [{ start: '2026-10-01', length: 4 }] };
+  S.importData({ type: 'cadence_single_profile', profile: raw });
+  S.importData(raw);
+  assert.equal(S.get().profiles.length, 2);
+  const vault = S.exportVault();
+  wipe();
+  assert.equal(S.get().profiles.length, 0);
+  S.importData(JSON.parse(JSON.stringify(vault)));
+  assert.equal(S.get().profiles.length, 2);
+  assert.ok(S.active());
+});
+
+test('import rejects unrelated files', () => {
+  assert.throws(() => S.importData({ hello: 'world' }), /Not a Cadence file/);
+  assert.throws(() => S.importData(null));
+});
+
+test('undo restores the previous state', () => {
+  wipe();
+  S.loadSample('2026-11-02');
+  assert.equal(S.get().profiles.length, 3);
+  const undo = S.deleteProfile('p_elena');
+  assert.equal(S.get().profiles.length, 2);
+  undo();
+  assert.equal(S.get().profiles.length, 3);
+});
+
+test('saveLog drops empty entries and keeps real ones', () => {
+  wipe();
+  S.loadSample('2026-11-02');
+  const p = S.active();
+  S.saveLog(p, '2026-11-01', { moods: ['Calm'] });
+  assert.deepEqual(S.active().logs['2026-11-01'].moods, ['Calm']);
+  S.saveLog(S.active(), '2026-11-01', {});
+  assert.equal(S.active().logs['2026-11-01'], undefined);
+});
+
+test('setPeriod updates average cycle length; removePeriod keeps one anchor', () => {
+  wipe();
+  S.createFirstProfile({ name: 'Zed', relation: 'Self', color: '#C25949', cycleLength: 28, periodLength: 5, lutealLength: 14, lastPeriod: '2026-10-20' });
+  const p = S.active();
+  assert.equal(p.periods.length, 2);
+  S.removePeriod(p, p.periods[0].start);
+  S.removePeriod(S.active(), S.active().periods[0].start);
+  assert.equal(S.active().periods.length, 1);
+});

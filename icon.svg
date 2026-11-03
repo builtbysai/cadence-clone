@@ -1,14 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
-    <radialGradient id="aura" cx="50%" cy="38%" r="62%">
-      <stop offset="0%" stop-color="#F2D7CA"/>
-      <stop offset="52%" stop-color="#C25949"/>
-      <stop offset="100%" stop-color="#1E1918"/>
-    </radialGradient>
-  </defs>
-  <rect width="512" height="512" rx="124" fill="#181514"/>
-  <circle cx="256" cy="256" r="174" fill="none" stroke="url(#aura)" stroke-width="16" opacity="0.88"/>
-  <circle cx="256" cy="256" r="126" fill="none" stroke="#F5EFEA" stroke-width="2" stroke-dasharray="6 8" opacity="0.32"/>
-  <path d="M256 132 C292 188, 322 226, 256 380 C190 226, 220 188, 256 132 Z" fill="url(#aura)" opacity="0.92"/>
-  <circle cx="256" cy="132" r="11" fill="#F5EFEA"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#F6F5F2"/><g fill="none" stroke-width="48" stroke-linecap="round"><path d="M299.3 122.9A140 140 0 0 1 389.1 212.7" stroke="#C25949"/><path d="M389.1 299.3A140 140 0 0 1 299.3 389.1" stroke="#3E7A6E"/><path d="M212.7 389.1A140 140 0 0 1 122.9 299.3" stroke="#C4862D"/><path d="M122.9 212.7A140 140 0 0 1 212.7 122.9" stroke="#7C5879"/></g></svg>
